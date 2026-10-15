@@ -141,7 +141,7 @@ Other coding agent CLIs can be installed and authenticated in the workspace term
 
 ## Orca CLI
 
-The image includes the Orca CLI from the same release as the runtime. It runs on the Bun runtime that ships with `orcad`, so it does not depend on the workspace's Node.js version. Orca terminals have it on `PATH`:
+The image includes the Orca CLI from the same release as the runtime. It runs on the Bun runtime that ships with `orcad`, so it does not depend on the workspace's Node.js version. `/orca/bashrc.sh` adds `/orca/bin` to `PATH`, so it works in any interactive shell:
 
 ```bash
 orca-ide --help
@@ -149,11 +149,7 @@ orca-ide --help
 
 On Linux the command is `orca-ide`, which keeps it clear of the GNOME Orca screen reader at `/usr/bin/orca`. As in upstream's [headless Linux server](https://github.com/stablyai/orca/blob/v1.4.219/docs/reference/headless-linux-server.md#cli-install-note) setup, the entrypoint also writes a bare `orca` dispatcher to `~/.local/bin/orca`. It leaves that path alone if another program already owns it.
 
-The CLI finds the running server through `ORCA_USER_DATA_PATH`, which defaults to `/projects/.che-orca/orca-home`. From an `oc exec` shell, add the launcher directory to `PATH` first:
-
-```bash
-export PATH=/orca/bin:$PATH
-```
+The CLI finds the running server through `ORCA_USER_DATA_PATH`, which defaults to `/projects/.che-orca/orca-home`.
 
 ### Persistent state
 
