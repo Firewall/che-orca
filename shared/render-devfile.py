@@ -10,15 +10,12 @@ import tempfile
 try:
     import yaml
 except ImportError:
-    sys.exit("Install the devfile renderer dependency with: python3 -m pip install -r requirements.txt")
+    sys.exit("Install the devfile renderer dependency with: python3 -m pip install PyYAML")
 
 
 IMAGE_VARIABLES = {"ORCA_IMAGE"}
 DEFAULTS = {
-    "GOOGLE_CLOUD_PROJECT": "",
-    "CLOUD_ML_REGION": "",
     "ORCA_PAIRING_ADDRESS": "",
-    "REDHAT_AI_NAMESPACE": "",
 }
 PLACEHOLDER = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 

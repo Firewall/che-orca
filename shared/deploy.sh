@@ -20,8 +20,7 @@ build_and_push_image() {
 }
 
 render_devfile() (
-  export ORCA_IMAGE GOOGLE_CLOUD_PROJECT CLOUD_ML_REGION \
-    ORCA_PAIRING_ADDRESS REDHAT_AI_NAMESPACE
+  export ORCA_IMAGE ORCA_PAIRING_ADDRESS
   python3 "$REPO_ROOT/shared/render-devfile.py" "$@"
 )
 
