@@ -12,6 +12,7 @@ This is an experiment. A direct OpenShift Route works around Che gateway routing
 | --- | --- |
 | Upstream | [stablyai/orca](https://github.com/stablyai/orca) v1.4.219 |
 | Agent | OpenCode 1.18.34, with optional KServe model discovery |
+| CLI | `orca-ide`, plus a bare `orca` in `~/.local/bin` when that name is free |
 | Port | 6768 |
 | Authentication | Browser pairing URL |
 | Client | Browser |
@@ -20,7 +21,7 @@ This is an experiment. A direct OpenShift Route works around Che gateway routing
 
 The devfile adds two components to the workspace:
 
-- **`orca-injector`** runs as a `preStart` init container. It copies the Orca standalone runtime, prebuilt web client, OpenCode, and the Google Cloud SDK out of the image and onto the shared `orca` volume mounted at `/orca`.
+- **`orca-injector`** runs as a `preStart` init container. It copies the Orca standalone runtime, prebuilt web client, Orca CLI, OpenCode, and the Google Cloud SDK out of the image and onto the shared `orca` volume mounted at `/orca`.
 - **`orca-runtime`** is a container contribution to the standard [universal developer image](https://quay.io/devfile/universal-developer-image). A `postStart` command launches `/orca/entrypoint.sh`, which starts `orcad` on port 6768 and serves the web client from `/orca/web`.
 
 Keeping the runtime on a volume means your workspace keeps the full universal developer image toolchain; Orca is injected alongside it rather than replacing it.
@@ -138,6 +139,22 @@ gcloud auth application-default login --no-launch-browser
 
 Other coding agent CLIs can be installed and authenticated in the workspace terminal.
 
+## Orca CLI
+
+The image includes the Orca CLI from the same release as the runtime. It runs on the Bun runtime that ships with `orcad`, so it does not depend on the workspace's Node.js version. Orca terminals have it on `PATH`:
+
+```bash
+orca-ide --help
+```
+
+On Linux the command is `orca-ide`, which keeps it clear of the GNOME Orca screen reader at `/usr/bin/orca`. As in upstream's [headless Linux server](https://github.com/stablyai/orca/blob/v1.4.219/docs/reference/headless-linux-server.md#cli-install-note) setup, the entrypoint also writes a bare `orca` dispatcher to `~/.local/bin/orca`. It leaves that path alone if another program already owns it.
+
+The CLI finds the running server through `ORCA_USER_DATA_PATH`, which defaults to `/projects/.che-orca/orca-home`. From an `oc exec` shell, add the launcher directory to `PATH` first:
+
+```bash
+export PATH=/orca/bin:$PATH
+```
+
 ### Persistent state
 
 Everything that should survive a workspace restart lives under `/projects/.che-orca`, symlinked into `$HOME`:
@@ -169,7 +186,7 @@ Remove it with `make unregister`. Manual registration also needs `ORCA_PAIRING_A
 
 ## Versions and limitations
 
-The Containerfile pins Orca to v1.4.219 and OpenCode to 1.18.34. Update those version declarations when testing a newer release. Base images, the Google Cloud SDK download, and the universal developer image tag still follow moving releases, so builds are not fully reproducible.
+The Containerfile pins Orca, including its CLI, to v1.4.219 and OpenCode to 1.18.34. Update those version declarations when testing a newer release. Base images, the Google Cloud SDK download, and the universal developer image tag still follow moving releases, so builds are not fully reproducible.
 
 Orca v1.4.219 needs [`web-client.patch`](web-client.patch) to serve its web client (`webClientRoot`) and to initialize the terminal graph, which a standalone server has no renderer to publish.
 
@@ -182,12 +199,13 @@ The entrypoint restarts the server after two seconds if it exits. Exit code 78 i
 ## Repository layout
 
 ```
-Containerfile                   multi-stage build: Orca runtime + web client, OpenCode, gcloud
+Containerfile                   multi-stage build: Orca runtime, web client, CLI, OpenCode, gcloud
 devfile.yaml                    injector and runtime components, preStart/postStart events
 deploy.sh                       build, push, Route, template, workspace, pairing URL
 teardown.sh                     remove workspace, template, Service, Route
-entrypoint-init-container.sh    copies the runtime onto the /orca volume
-entrypoint.sh                   persistent state, model discovery, starts orcad on 6768
+entrypoint-init-container.sh    copies the runtime and CLI onto the /orca volume
+entrypoint.sh                   persistent state, CLI shim, model discovery, starts orcad on 6768
+orca-ide.sh                     Orca CLI launcher, installed as /orca/bin/orca-ide
 web-client.patch                upstream patch applied during the build
 shared/                         deploy helpers, devfile renderer, runtime setup, KServe discovery
 tests/                          unit tests with mocked cluster and build commands

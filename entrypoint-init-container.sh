@@ -7,6 +7,8 @@ cp /usr/local/bin/shared-bashrc.sh /orca/bashrc.sh
 cp /usr/local/bin/shared-discover-models.sh /orca/discover-models.sh
 cp -r /opt/orca/runtime /orca/runtime
 cp -r /opt/orca/web /orca/web
+cp -r /opt/orca/cli /orca/cli
+cp -r /opt/orca/bin /orca/bin
 cp /opt/orca/LICENSE /orca/LICENSE
 cp -r /opt/app-root/src/.npm-global /orca/npm-global
 cp -r /usr/lib/google-cloud-sdk /orca/google-cloud-sdk
