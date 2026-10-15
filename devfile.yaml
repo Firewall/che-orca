@@ -76,7 +76,5 @@ components:
       app.kubernetes.io/part-of: orca.eclipse.org
       controller.devfile.io/container-contribution: true
 
-  # The injector repopulates /orca on every start, so keep it off the PVC.
   - name: orca
-    volume:
-      ephemeral: true
+    volume: {}
