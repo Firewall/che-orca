@@ -2,7 +2,7 @@ schemaVersion: 2.2.2
 
 metadata:
   name: stablyai/orca-editor/latest
-  displayName: Orca + OpenCode
+  displayName: Orca
   description: Web development environment for coding agents and parallel worktrees
   attributes:
     publisher: stablyai
@@ -45,14 +45,8 @@ components:
     container:
       image: quay.io/devfile/universal-developer-image:latest
       env:
-        - name: GOOGLE_CLOUD_PROJECT
-          value: "${GOOGLE_CLOUD_PROJECT}"
-        - name: CLOUD_ML_REGION
-          value: "${CLOUD_ML_REGION}"
         - name: ORCA_PAIRING_ADDRESS
           value: "${ORCA_PAIRING_ADDRESS}"
-        - name: REDHAT_AI_NAMESPACE
-          value: "${REDHAT_AI_NAMESPACE}"
       volumeMounts:
         - name: orca
           path: /orca

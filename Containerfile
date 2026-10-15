@@ -58,18 +58,6 @@ RUN dnf upgrade -y --disablerepo='*' --enablerepo='ubi-*' && \
     dnf install -y --disablerepo='*' --enablerepo='ubi-*' git && \
     dnf clean all
 
-RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "aarch64" ]; then GCLOUD_ARCH="arm"; else GCLOUD_ARCH="x86_64"; fi && \
-    curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-${GCLOUD_ARCH}.tar.gz" \
-      | tar -xz -C /usr/lib
-
-# Keep installer-created state out of the image so the entrypoint can link it to /projects.
-ARG OPENCODE_VERSION=1.18.34
-RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" && \
-    rm -rf /opt/app-root/src/.config/opencode \
-           /opt/app-root/src/.local/share/opencode \
-           /opt/app-root/src/.local/state/opencode
-
 COPY --from=builder /src/orca/out/orcad /opt/orca/runtime
 COPY --from=builder /src/orca/out/web /opt/orca/web
 COPY --from=builder /src/orca/LICENSE /opt/orca/LICENSE
@@ -77,7 +65,6 @@ COPY --from=builder /opt/orca-cli /opt/orca/cli
 COPY orca.sh /opt/orca/bin/orca
 COPY shared/runtime.sh /usr/local/bin/shared-runtime.sh
 COPY shared/bashrc.sh /usr/local/bin/shared-bashrc.sh
-COPY shared/discover-models.sh /usr/local/bin/shared-discover-models.sh
 COPY entrypoint.sh /usr/local/bin/orca-entrypoint.sh
 COPY entrypoint-init-container.sh /entrypoint-init-container.sh
 

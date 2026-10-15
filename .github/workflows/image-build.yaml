@@ -18,7 +18,7 @@ jobs:
   # Orca's orcad runtime is a Bun-compiled binary and Bun publishes x64 and
   # arm64 builds only, so s390x and ppc64le cannot be built from this source.
   # Each platform builds on a native runner; emulating the runtime stage is
-  # too slow for the dnf, npm, and gcloud installs.
+  # too slow for the dnf install and the Orca build.
   build:
     name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}

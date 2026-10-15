@@ -12,4 +12,3 @@ config.env.*
 .che-orca/
 **/.che-orca/
 entrypoint-logs.txt
-opencode.json
