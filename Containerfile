@@ -31,6 +31,13 @@ RUN case "$TARGETARCH" in \
     node config/scripts/build-orcad-bun.mjs --target "linux-${ORCAD_ARCH}-glibc" && \
     node --run build:web
 
+# Package the CLI beside its runtime dependencies so orcad's Bun runtime can run it.
+RUN node node_modules/typescript/bin/tsc -p config/tsconfig.cli.json --outDir out --composite false --incremental false && \
+    node config/scripts/verify-cli-bin.mjs --fix-executable --fix-package-json && \
+    mkdir -p /opt/orca-cli/node_modules && \
+    cp -r out/cli out/main out/shared out/package.json /opt/orca-cli/ && \
+    cp -rL node_modules/ws node_modules/zod /opt/orca-cli/node_modules/
+
 FROM registry.access.redhat.com/ubi9/nodejs-22
 
 USER 0
@@ -54,6 +61,8 @@ RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" && \
 COPY --from=builder /src/orca/out/orcad /opt/orca/runtime
 COPY --from=builder /src/orca/out/web /opt/orca/web
 COPY --from=builder /src/orca/LICENSE /opt/orca/LICENSE
+COPY --from=builder /opt/orca-cli /opt/orca/cli
+COPY orca-ide.sh /opt/orca/bin/orca-ide
 COPY shared/runtime.sh /usr/local/bin/shared-runtime.sh
 COPY shared/bashrc.sh /usr/local/bin/shared-bashrc.sh
 COPY shared/discover-models.sh /usr/local/bin/shared-discover-models.sh

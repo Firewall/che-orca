@@ -4,7 +4,7 @@
 source /orca/runtime.sh
 setup_runtime /orca/bashrc.sh || exit 1
 
-export PATH="/orca/npm-global/bin:/orca/google-cloud-sdk/bin:${PATH}"
+export PATH="$HOME/.local/bin:/orca/bin:/orca/npm-global/bin:/orca/google-cloud-sdk/bin:${PATH}"
 export SHELL=/bin/bash
 
 PERSIST="${PROJECTS_ROOT:-/projects}/.che-orca"
@@ -15,15 +15,26 @@ touch "$PERSIST/ready.jsonl" || exit 1
 chmod 600 "$PERSIST/ready.jsonl" || exit 1
 
 export ORCA_USER_DATA="$PERSIST/orca-home"
+export ORCA_USER_DATA_PATH="$ORCA_USER_DATA"
 export ORCA_WEB_ROOT=/orca/web
 export ORCA_VERSION=1.4.219
 export CLOUDSDK_CONFIG="$PERSIST/gcloud"
 
-mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/state"
+mkdir -p "$HOME/.config" "$HOME/.local/bin" "$HOME/.local/share" "$HOME/.local/state"
 ln -sfn "$PERSIST/opencode-config" "$HOME/.config/opencode"
 ln -sfn "$PERSIST/opencode-share" "$HOME/.local/share/opencode"
 ln -sfn "$PERSIST/opencode-state" "$HOME/.local/state/opencode"
 ln -sfn "$PERSIST/gcloud" "$HOME/.config/gcloud"
+
+# Give this user's shells a bare `orca`, as upstream's headless server does.
+# Best effort: keep any `orca` that this script did not write.
+ORCA_SHIM="$HOME/.local/bin/orca"
+ORCA_SHIM_MARKER="# orca-serve-bare-orca-dispatcher"
+if [ ! -e "$ORCA_SHIM" ] || [ "$(sed -n 2p "$ORCA_SHIM" 2>/dev/null)" = "$ORCA_SHIM_MARKER" ]; then
+  printf '#!/usr/bin/env bash\n%s\nexec /orca/bin/orca-ide "$@"\n' "$ORCA_SHIM_MARKER" > "$ORCA_SHIM" &&
+    chmod 755 "$ORCA_SHIM" ||
+    echo "Could not create $ORCA_SHIM; use orca-ide instead."
+fi
 
 if [ -f /orca/discover-models.sh ]; then
   bash /orca/discover-models.sh "${PROJECTS_ROOT:-/projects}/opencode.json"
