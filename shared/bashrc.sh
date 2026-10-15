@@ -13,3 +13,8 @@ __git_ps1_minimal() {
 }
 
 PS1='\[\e[1;34m\]\w\[\e[0;33m\]$(__git_ps1_minimal)\[\e[0m\] \$ '
+
+case ":$PATH:" in
+  *:/orca/bin:*) ;;
+  *) export PATH="/orca/bin:$PATH" ;;
+esac

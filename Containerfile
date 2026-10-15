@@ -31,12 +31,24 @@ RUN case "$TARGETARCH" in \
     node config/scripts/build-orcad-bun.mjs --target "linux-${ORCAD_ARCH}-glibc" && \
     node --run build:web
 
-# Package the CLI beside its runtime dependencies so orcad's Bun runtime can run it.
-RUN node node_modules/typescript/bin/tsc -p config/tsconfig.cli.json --outDir out --composite false --incremental false && \
+# Package the CLI with the runtime dependencies upstream ships beside its desktop CLI,
+# so orcad's Bun runtime can run it.
+RUN case "$TARGETARCH" in \
+      amd64) ORCAD_ARCH=x64 ;; \
+      arm64) ORCAD_ARCH=arm64 ;; \
+    esac && \
+    node node_modules/typescript/bin/tsc -p config/tsconfig.cli.json --outDir out --composite false --incremental false && \
     node config/scripts/verify-cli-bin.mjs --fix-executable --fix-package-json && \
-    mkdir -p /opt/orca-cli/node_modules && \
+    mkdir -p /opt/orca-cli && \
     cp -r out/cli out/main out/shared out/package.json /opt/orca-cli/ && \
-    cp -rL node_modules/ws node_modules/zod /opt/orca-cli/node_modules/
+    node -e ' \
+      const { cpSync } = require("node:fs"); \
+      const { join } = require("node:path"); \
+      const runtime = require("./config/packaged-runtime-node-modules.cjs"); \
+      for (const { from, to } of runtime.createPackagedRuntimeNodeModuleResources("linux")) \
+        cpSync(from, join("/opt/orca-cli", to), { recursive: true, dereference: true }); \
+      runtime.prunePackagedRuntimeNodeModules("/opt/orca-cli", "linux", process.argv[1]); \
+    ' "$ORCAD_ARCH"
 
 FROM registry.access.redhat.com/ubi9/nodejs-22
 
