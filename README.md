@@ -147,7 +147,7 @@ The image includes the Orca CLI from the same release as the runtime. It runs on
 orca-ide --help
 ```
 
-On Linux the command is `orca-ide`, which keeps it clear of the GNOME Orca screen reader at `/usr/bin/orca`. As in upstream's [headless Linux server](https://github.com/stablyai/orca/blob/v1.4.219/docs/reference/headless-linux-server.md#cli-install-note) setup, the entrypoint also writes a bare `orca` dispatcher to `~/.local/bin/orca`. It leaves that path alone if another program already owns it.
+As in upstream's [headless Linux server](https://github.com/stablyai/orca/blob/v1.4.219/docs/reference/headless-linux-server.md#cli-install-note) setup, the entrypoint also writes a bare `orca` dispatcher to `~/.local/bin/orca`. It leaves that path alone if another program already owns it.
 
 The CLI finds the running server through `ORCA_USER_DATA_PATH`, which defaults to `/projects/.che-orca/orca-home`.
 
