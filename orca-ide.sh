@@ -1,6 +1,5 @@
 #!/bin/bash
-# Orca CLI launcher. Linux names it orca-ide so it never shadows the GNOME Orca
-# screen reader at /usr/bin/orca.
+# Orca CLI launcher.
 
 # The CLI finds the running orcad through the same data root the entrypoint sets.
 export ORCA_USER_DATA_PATH="${ORCA_USER_DATA_PATH:-${ORCA_USER_DATA:-${PROJECTS_ROOT:-/projects}/.che-orca/orca-home}}"
