@@ -74,7 +74,7 @@ COPY --from=builder /src/orca/out/orcad /opt/orca/runtime
 COPY --from=builder /src/orca/out/web /opt/orca/web
 COPY --from=builder /src/orca/LICENSE /opt/orca/LICENSE
 COPY --from=builder /opt/orca-cli /opt/orca/cli
-COPY orca-ide.sh /opt/orca/bin/orca-ide
+COPY orca.sh /opt/orca/bin/orca
 COPY shared/runtime.sh /usr/local/bin/shared-runtime.sh
 COPY shared/bashrc.sh /usr/local/bin/shared-bashrc.sh
 COPY shared/discover-models.sh /usr/local/bin/shared-discover-models.sh

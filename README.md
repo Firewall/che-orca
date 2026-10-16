@@ -12,7 +12,7 @@ This is an experiment. A direct OpenShift Route works around Che gateway routing
 | --- | --- |
 | Upstream | [stablyai/orca](https://github.com/stablyai/orca) v1.4.219 |
 | Agent | OpenCode 1.18.34, with optional KServe model discovery |
-| CLI | `orca-ide`, plus a bare `orca` in `~/.local/bin` when that name is free |
+| CLI | `orca` |
 | Port | 6768 |
 | Authentication | Browser pairing URL |
 | Client | Browser |
@@ -144,10 +144,8 @@ Other coding agent CLIs can be installed and authenticated in the workspace term
 The image includes the Orca CLI from the same release as the runtime. It runs on the Bun runtime that ships with `orcad`, so it does not depend on the workspace's Node.js version. `/orca/bashrc.sh` adds `/orca/bin` to `PATH`, so it works in any interactive shell:
 
 ```bash
-orca-ide --help
+orca --help
 ```
-
-As in upstream's [headless Linux server](https://github.com/stablyai/orca/blob/v1.4.219/docs/reference/headless-linux-server.md#cli-install-note) setup, the entrypoint also writes a bare `orca` dispatcher to `~/.local/bin/orca`. It leaves that path alone if another program already owns it.
 
 The CLI finds the running server through `ORCA_USER_DATA_PATH`, which defaults to `/projects/.che-orca/orca-home`.
 
@@ -200,8 +198,8 @@ devfile.yaml                    injector and runtime components, preStart/postSt
 deploy.sh                       build, push, Route, template, workspace, pairing URL
 teardown.sh                     remove workspace, template, Service, Route
 entrypoint-init-container.sh    copies the runtime and CLI onto the /orca volume
-entrypoint.sh                   persistent state, CLI shim, model discovery, starts orcad on 6768
-orca-ide.sh                     Orca CLI launcher, installed as /orca/bin/orca-ide
+entrypoint.sh                   persistent state, model discovery, starts orcad on 6768
+orca.sh                         Orca CLI launcher, installed as /orca/bin/orca
 web-client.patch                upstream patch applied during the build
 shared/                         deploy helpers, devfile renderer, runtime setup, KServe discovery
 tests/                          unit tests with mocked cluster and build commands
