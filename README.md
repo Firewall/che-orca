@@ -31,20 +31,12 @@ Orca advertises its own WebSocket address in the pairing URL it hands to the bro
 
 - An OpenShift cluster with Eclipse Che installed.
 - Bash and `podman` on your machine. The deploy script uses Podman.
-- Python 3 and PyYAML for devfile rendering.
+- Python 3 for devfile rendering.
 - The `oc` CLI, logged in to the cluster.
 - Permission to create DevWorkspaces, DevWorkspaceTemplates, Services, and Routes in your Che user workspace namespace.
 - A registry you can push to and that workspace pods can pull from. A public image is convenient on shared clusters where you cannot configure pull credentials.
 
 Cluster-wide editor registration additionally needs admin permissions.
-
-Install the renderer dependency in a virtual environment and activate it before deploying or registering:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install PyYAML
-```
 
 ## Configure
 
