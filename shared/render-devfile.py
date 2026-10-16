@@ -7,51 +7,58 @@ import re
 import sys
 import tempfile
 
-try:
-    import yaml
-except ImportError:
-    sys.exit("Install the devfile renderer dependency with: python3 -m pip install PyYAML")
-
 
 IMAGE_VARIABLES = {"ORCA_IMAGE"}
 DEFAULTS = {
     "ORCA_PAIRING_ADDRESS": "",
 }
 PLACEHOLDER = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+TOP_LEVEL_KEY = re.compile(r"^([A-Za-z][\w-]*):")
+# Devfile keys that are not part of a DevWorkspaceTemplate spec.
+NON_SPEC_KEYS = {"schemaVersion", "metadata"}
 
 
-def substitute(value, environment):
-    if isinstance(value, str):
-        def replace(match):
-            name = match[1]
-            if name in IMAGE_VARIABLES:
-                if not environment.get(name):
-                    raise ValueError(f"Set {name} in config.env")
-                return environment[name]
-            if name in DEFAULTS:
-                return environment.get(name) or DEFAULTS[name]
-            return match[0]
-        return PLACEHOLDER.sub(replace, value)
-    if isinstance(value, list):
-        return [substitute(item, environment) for item in value]
-    if isinstance(value, dict):
-        return {key: substitute(item, environment) for key, item in value.items()}
-    return value
+def substitute(text, environment):
+    def replace(match):
+        name = match[1]
+        if name in IMAGE_VARIABLES:
+            if not environment.get(name):
+                raise ValueError(f"Set {name} in config.env")
+            return environment[name]
+        if name in DEFAULTS:
+            return environment.get(name) or DEFAULTS[name]
+        return match[0]
+    return PLACEHOLDER.sub(replace, text)
+
+
+def wrap_template(text, template_name):
+    # Indent every top-level block except schemaVersion and metadata under spec.
+    spec = []
+    keep = True
+    for line in text.splitlines():
+        key = TOP_LEVEL_KEY.match(line)
+        if key:
+            keep = key[1] not in NON_SPEC_KEYS
+        if keep:
+            spec.append(f"  {line}" if line.strip() else "")
+    header = [
+        "apiVersion: workspace.devfile.io/v1alpha2",
+        "kind: DevWorkspaceTemplate",
+        "metadata:",
+        f"  name: {template_name}",
+        "spec:",
+    ]
+    return "\n".join(header + spec).rstrip() + "\n"
 
 
 def render(path, environment, template_name=None):
-    document = yaml.safe_load(Path(path).read_text())
-    if not isinstance(document, dict) or not isinstance(document.get("components"), list) or not document["components"]:
+    text = Path(path).read_text()
+    if not re.search(r"^components:\s*\n\s+- ", text, re.MULTILINE):
         raise ValueError("The devfile must contain a nonempty components list")
-    document = substitute(document, environment)
+    text = substitute(text, environment)
     if template_name:
-        document = {
-            "apiVersion": "workspace.devfile.io/v1alpha2",
-            "kind": "DevWorkspaceTemplate",
-            "metadata": {"name": template_name},
-            "spec": {key: value for key, value in document.items() if key not in ("schemaVersion", "metadata")},
-        }
-    return document
+        text = wrap_template(text, template_name)
+    return text
 
 
 def write_output(path, text):
@@ -76,15 +83,14 @@ def main():
     parser.add_argument("--check", action="store_true", help="Validate the devfile and variables without writing output")
     args = parser.parse_args()
     try:
-        document = render(args.devfile, os.environ, args.template)
+        text = render(args.devfile, os.environ, args.template)
         if args.check:
             return
-        text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
         if args.output:
             write_output(args.output, text)
         else:
             sys.stdout.write(text)
-    except (OSError, ValueError, yaml.YAMLError) as error:
+    except (OSError, ValueError) as error:
         sys.exit(f"render-devfile: {error}")
 
 
