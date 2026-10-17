@@ -2,7 +2,7 @@
 
 [![Container Repository on Quay](https://quay.io/repository/che-incubator/che-orca/status "Container Repository on Quay")](https://quay.io/repository/che-incubator/che-orca)
 
-Run [Orca](https://github.com/stablyai/orca) as an editor in an Eclipse Che workspace, together with the Orca CLI. Orca provides a browser environment for coding agents and parallel Git worktrees.
+Run [Orca](https://github.com/stablyai/orca) as an editor in an Eclipse Che workspace, together with the Orca CLI and a browser that coding agents can drive and you can watch. Orca provides a browser environment for coding agents and parallel Git worktrees.
 
 This repository contains the container recipe, devfile, and scripts that build an image and create a workspace in your user namespace.
 
@@ -12,6 +12,7 @@ This is an experiment. A direct OpenShift Route works around Che gateway routing
 | --- | --- |
 | Upstream | [stablyai/orca](https://github.com/stablyai/orca) v1.4.219 |
 | CLI | `orca` |
+| Browser | Chromium pages on the server, streamed into the Orca web client |
 | Port | 6768 |
 | Authentication | Browser pairing URL |
 | Client | Browser |
@@ -20,10 +21,12 @@ This is an experiment. A direct OpenShift Route works around Che gateway routing
 
 The devfile adds two components to the workspace:
 
-- **`orca-injector`** runs as a `preStart` init container. It copies the Orca standalone runtime, prebuilt web client, and Orca CLI out of the image and onto the shared `orca` volume mounted at `/orca`.
-- **`orca-runtime`** is a container contribution. Che merges it into the workspace's tool container, or runs it in the Orca image when the workspace has none. A `postStart` command launches `/orca/entrypoint.sh`, which starts `orcad` on port 6768 and serves the web client from `/orca/web`.
+- **`orca-injector`** runs as a `preStart` init container. It copies a self-contained Orca bundle out of the image and onto the shared `orca` volume mounted at `/orca`: Orca's official Linux desktop build, the UBI 9 libraries it loads, and an Xvfb virtual display.
+- **`orca-runtime`** is a container contribution. Che merges it into the workspace's tool container, such as the standard [universal developer image](https://quay.io/devfile/universal-developer-image). A `postStart` command launches `/orca/entrypoint.sh`, which starts `orca-ide serve` on port 6768. In serve mode Orca's desktop build runs without a window, serves the web client, and hosts the browser pages on the bundled Xvfb, which it starts and stops itself.
 
-Keeping the runtime on a volume means your workspace keeps the full universal developer image toolchain; Orca is injected alongside it rather than replacing it.
+When the workspace has no tool container, Che runs `orca-runtime` in the Orca image instead. Orca and its browser still start there, but the image has no fonts, Git, or coding agents, so pages render without text and there is little to work with. Use a workspace with a tool container.
+
+Keeping the runtime on a volume means your workspace keeps the full universal developer image toolchain; Orca is injected alongside it rather than replacing it. Orca's executable and the bundled Xvfb find their libraries through a library search path (RPATH) set at build time, so nothing like `LD_LIBRARY_PATH` leaks into your terminals.
 
 Orca advertises its own WebSocket address in the pairing URL it hands to the browser, so `deploy.sh` creates the direct Route *before* starting the workspace and passes the resulting `wss://` hostname in as `ORCA_PAIRING_ADDRESS`.
 
@@ -74,17 +77,19 @@ The script builds and pushes a `linux/amd64` image, creates the direct Service a
 === Orca is ready ===
 
 URL:      https://<route-host>/#<pairing-fragment>
-Shell:    oc exec -it <pod> -c orca-runtime -n <namespace> -- bash
+Shell:    oc exec -it <pod> -c tools -n <namespace> -- bash
 ```
 
 Keep that output private. The URL is a credential.
 
 The workspace starts with no source repository. To start Orca on a repository, create the workspace from the Che dashboard instead (see [Cluster-wide registration](#cluster-wide-registration)), or clone under `/projects` after connecting. Resource names are fixed, so rerunning the script updates the same workspace, template, Service, and Route.
 
+The workspace has a `tools` container from the universal developer image, which Orca's runtime joins, with Claude Code and OpenCode installed the way the Che dashboard installs its AI tools. The dashboard shows both as selected, and you can change the selection there. Each tool needs its API key, which you can set in the dashboard.
+
 If the script times out waiting for the pairing URL, check the startup log:
 
 ```bash
-oc exec "$POD" -c orca-runtime -n "$NAMESPACE" -- cat /orca/entrypoint-logs.txt
+oc exec "$POD" -c tools -n "$NAMESPACE" -- cat /orca/entrypoint-logs.txt
 ```
 
 ## Access and credentials
@@ -98,7 +103,7 @@ source ./config.env
 POD=$(oc get pods -n "$NAMESPACE" \
   -l controller.devfile.io/devworkspace_name=orca-workspace \
   --no-headers | awk '$3 != "Completed" && $1 !~ /cleanup/ {print $1; exit}')
-oc exec "$POD" -c orca-runtime -n "$NAMESPACE" -- \
+oc exec "$POD" -c tools -n "$NAMESPACE" -- \
   cat /projects/.che-orca/ready.jsonl
 ```
 
@@ -106,13 +111,13 @@ Use the full `pairing.webClientUrl` from the `orca_server_ready` record, **inclu
 
 ## Orca CLI
 
-The image includes the Orca CLI from the same release as the runtime. It runs on the Bun runtime that ships with `orcad`, so it does not depend on the workspace's Node.js version. `/orca/bashrc.sh` adds `/orca/bin` to `PATH`, so it works in any interactive shell:
+The CLI comes from the same Orca release as the server. `/orca/bashrc.sh` adds `/orca/bin` to `PATH`, so it works in any interactive shell, and terminals that Orca opens have it too:
 
 ```bash
 orca --help
 ```
 
-The CLI finds the running server through `ORCA_USER_DATA_PATH`, which defaults to `/projects/.che-orca/orca-home`.
+The CLI finds the running server through Orca's profile, which the entrypoint links from `~/.config/orca` to `/projects/.che-orca/orca-home`.
 
 ### Projects
 
@@ -132,8 +137,25 @@ Everything that should survive a workspace restart lives under `/projects/.che-o
 
 | Path | Contents |
 | --- | --- |
-| `orca-home/` | Orca user data, set by `ORCA_USER_DATA` |
+| `orca-home/` | Orca's profile, linked from `~/.config/orca`: workspaces, browser cookies and storage, CLI runtime pointer |
 | `ready.jsonl` | Readiness stream, including the pairing URL |
+
+## Browser
+
+Agents drive the browser through the CLI:
+
+```bash
+orca tab create --url https://example.com
+orca snapshot                 # accessibility tree with element refs such as @e4
+orca click --element @e4
+orca fill --element @e7 --value "hello"
+orca goto --url http://localhost:3000
+orca screenshot --format png
+```
+
+Run `orca --help` for the full list, including tabs, cookies, console, network, and `orca exec` for raw `agent-browser` commands.
+
+Each tab belongs to a worktree and appears as a browser tab in the Orca web client. The pane streams the live page from the server, and you can click and type in it to take over from an agent.
 
 ## Remove a deployment
 
@@ -161,27 +183,35 @@ Remove it with `make unregister`. Manual registration also needs `ORCA_PAIRING_A
 
 ## Versions and limitations
 
-The Containerfile pins Orca, including its CLI, to v1.4.219. Update that version declaration when testing a newer release. Base images and the universal developer image tag still follow moving releases, so builds are not fully reproducible.
+The Containerfile pins Orca to v1.4.219 and checks the release RPM and Orca's license file against SHA-256 checksums. Update `ORCA_VERSION` and the checksums together when testing a newer release. Base images and the universal developer image tag still follow moving releases, so builds are not fully reproducible.
 
-Orca v1.4.219 needs [`web-client.patch`](web-client.patch) to serve its web client (`webClientRoot`) and to initialize the terminal graph, which a standalone server has no renderer to publish.
+Orca's headless browser needs an X display, and neither UBI 9 nor UBI 10 ships an X server. [`build/build-xvfb.sh`](build/build-xvfb.sh) builds Xvfb on UBI 9 from pinned X.Org sources, whose release signatures were checked when the checksums were recorded, together with the few X libraries UBI lacks. Everything else in the bundle is copied from UBI 9 packages. A verification stage starts Orca in a bare `ubi9-minimal` image and opens a browser tab, so the build fails if the bundle depends on anything outside it. Xvfb, patchelf, and the Orca bundle build in separate stages, so changing one does not rebuild the others.
 
-The published image targets `linux/amd64` and `linux/arm64`; `make build` builds `linux/amd64` only. The builder stage runs on the host architecture (`--platform=$BUILDPLATFORM`) and cross-compiles the `orcad` runtime, because esbuild fails under amd64 emulation on ARM machines.
+The bundle runs in UBI 9 based workspace images, glibc 2.34 or newer, such as the universal developer image. Pages render text with the workspace image's fontconfig and fonts.
 
-`s390x` and `ppc64le` are not supported. The `orcad` runtime is a Bun-compiled binary and Bun publishes x64 and arm64 builds only, so the architecture cannot be built from this source regardless of base image availability.
+Orca runs Chromium with `--no-sandbox`. OpenShift's restricted security context blocks the setuid helper and user namespaces that Chromium's sandboxes need. Upstream runs its container tests the same way.
+
+Orca finds no keyring service in the workspace, so it stores secrets, such as integration tokens, unencrypted in its profile under `/projects/.che-orca/orca-home`. That directory is readable only by the workspace user.
+
+`orca screenshot` of a tab that nobody is viewing can return a blank image ([stablyai/orca#26138](https://github.com/stablyai/orca/issues/26138), fix proposed in [#26139](https://github.com/stablyai/orca/pull/26139)). Snapshots, actions, `eval`, and the live view are not affected, and screenshots work while the tab is open in the web client.
+
+The published image targets `linux/amd64` and `linux/arm64`; `make build` builds `linux/amd64` only. The builder compiles Xvfb for the target architecture, so building `linux/amd64` on an ARM machine runs under emulation and is slow. `s390x` and `ppc64le` are not supported because Orca publishes no Linux builds for them.
 
 The entrypoint restarts the server after two seconds if it exits. Exit code 78 is treated as a configuration error and is not retried.
 
 ## Repository layout
 
 ```
-Containerfile                   multi-stage build: Orca runtime, web client, CLI
+Containerfile                   builds and verifies the Orca bundle on UBI 9, ubi9-minimal injector image
+build/build-xvfb.sh             builds Xvfb and the X libraries UBI lacks
+build/bundle-libraries.sh       copies the UBI libraries the bundle loads, with their licenses
+build/set-rpath.sh              points Orca's executable at the bundled libraries
+build/verify-bundle.sh          checks that the bundle runs on a bare ubi9-minimal image
 devfile.yaml                    injector and runtime components, preStart/postStart events
 deploy.sh                       build, push, Route, template, workspace, pairing URL
 teardown.sh                     remove workspace, template, Service, Route
-entrypoint-init-container.sh    copies the runtime and CLI onto the /orca volume
-entrypoint.sh                   persistent state, starts orcad on 6768
-orca.sh                         Orca CLI launcher, installed as /orca/bin/orca
-web-client.patch                upstream patch applied during the build
+entrypoint-init-container.sh    copies the bundle onto the /orca volume
+entrypoint.sh                   persistent state, starts orca-ide serve on 6768
 shared/                         deploy helpers, devfile renderer, runtime setup
 config.env.example              documented local configuration
 Makefile                        build, push, and admin registration targets
@@ -193,4 +223,4 @@ For local changes, check Bash syntax and run ShellCheck before testing a deploym
 
 ## License
 
-The integration code is licensed under [MIT](LICENSE). [Orca](https://github.com/stablyai/orca) keeps its own license. This integration applies a small patch to Orca and includes its [upstream license](https://github.com/stablyai/orca/blob/v1.4.219/LICENSE) in the runtime image. Preserve upstream license files and notices when redistributing images.
+The integration code is licensed under [MIT](LICENSE). [Orca](https://github.com/stablyai/orca) keeps its own license. This integration bundles Orca's unmodified release build and includes its [upstream license](https://github.com/stablyai/orca/blob/v1.4.219/LICENSE) at `/orca/LICENSE`. The licenses of the bundled X.Org and UBI packages are under `/orca/runtime/share/licenses`. Preserve upstream license files and notices when redistributing images.

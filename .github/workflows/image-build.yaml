@@ -15,10 +15,9 @@ env:
   IMAGE: quay.io/che-incubator/che-orca
 
 jobs:
-  # Orca's orcad runtime is a Bun-compiled binary and Bun publishes x64 and
-  # arm64 builds only, so s390x and ppc64le cannot be built from this source.
-  # Each platform builds on a native runner; emulating the runtime stage is
-  # too slow for the dnf install and the Orca build.
+  # Orca publishes Linux builds for x64 and arm64 only, so s390x and ppc64le
+  # are not built. Each platform builds on a native runner; compiling Xvfb
+  # under emulation is too slow.
   build:
     name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}

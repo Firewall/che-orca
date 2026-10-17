@@ -32,7 +32,7 @@ wait_for_workspace "orca-workspace" 180s
 echo "Waiting for Orca to start..."
 WEB_URL=""
 for _ in $(seq 1 60); do
-  WEB_URL=$(oc exec "$POD" -c orca-runtime -n "$NAMESPACE" -- node -e '
+  WEB_URL=$(oc exec "$POD" -c tools -n "$NAMESPACE" -- node -e '
     const fs = require("fs");
     const lines = fs.readFileSync("/projects/.che-orca/ready.jsonl", "utf8").split("\n");
     for (const line of lines) {
@@ -51,7 +51,7 @@ for _ in $(seq 1 60); do
 done
 if [ -z "$WEB_URL" ]; then
   echo "Orca did not publish a browser pairing URL. Check the startup logs:"
-  echo "  oc exec $POD -c orca-runtime -n $NAMESPACE -- cat /orca/entrypoint-logs.txt"
+  echo "  oc exec $POD -c tools -n $NAMESPACE -- cat /orca/entrypoint-logs.txt"
   exit 1
 fi
 
@@ -59,4 +59,4 @@ echo ""
 echo "=== Orca is ready ==="
 echo ""
 echo "URL:      ${WEB_URL}"
-echo "Shell:    oc exec -it $POD -c orca-runtime -n $NAMESPACE -- bash"
+echo "Shell:    oc exec -it $POD -c tools -n $NAMESPACE -- bash"

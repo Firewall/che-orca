@@ -31,9 +31,55 @@ create_editor_template() {
   printf '%s\n' "$manifest" | oc apply -n "$NAMESPACE" -f -
 }
 
+# Print the component and commands the Che dashboard adds for an AI tool from its registry, so
+# the dashboard shows the tool as selected. The tool lands on the tools container.
+ai_tool_component() {
+  local slug="$1" binary="$2" image="$3"
+  cat <<EOF
+      - name: ${slug}-injector
+        attributes:
+          che.eclipse.org/admin-manageable: true
+        container:
+          image: ${image}
+          command:
+            - /bin/sh
+          args:
+            - -c
+            - >-
+              rm -f /injected-tools/bin/${binary} /injected-tools/bin/${binary}-bin 2>/dev/null;
+              mkdir -p /injected-tools/bin && cp /usr/local/bin/${binary} /injected-tools/bin/${binary}
+              && { test -f /usr/local/bin/${binary}-bin && cp /usr/local/bin/${binary}-bin /injected-tools/bin/${binary}-bin || true; }
+          memoryLimit: 1024Mi
+          mountSources: false
+          volumeMounts:
+            - name: injected-tools
+              path: /injected-tools
+EOF
+}
+
+ai_tool_commands() {
+  local slug="$1" name="$2"
+  cat <<EOF
+      - id: install-${slug}
+        apply:
+          component: ${slug}-injector
+      - id: symlink-${slug}
+        exec:
+          component: tools
+          commandLine: >-
+            for rc in "\$HOME/.bashrc" "\$HOME/.profile"; do grep -q injected-tools "\$rc" 2>/dev/null
+            || echo 'export PATH="/injected-tools/bin:\$PATH"' >> "\$rc" 2>/dev/null; done; true
+          workingDir: \${CHE_PROJECTS_ROOT}
+          label: Set up ${name}
+EOF
+}
+
 create_workspace() {
   local workspace="$1" editor="$2"
   echo "Creating workspace..."
+  # The editor contributes its runtime into the tools container. Unlike the dashboard, leave PATH
+  # unset there: the dashboard's fallback value would hide the universal developer image's
+  # toolchains, and the setup commands already add /injected-tools/bin to shell profiles.
   cat <<EOF | oc apply -n "$NAMESPACE" -f -
 apiVersion: workspace.devfile.io/v1alpha2
 kind: DevWorkspace
@@ -50,6 +96,31 @@ spec:
         name: ${editor}
   template:
     projects: []
+    components:
+      - name: tools
+        container:
+          image: quay.io/devfile/universal-developer-image:latest
+          mountSources: true
+          volumeMounts:
+            - name: injected-tools
+              path: /injected-tools
+      - name: injected-tools
+        attributes:
+          che.eclipse.org/admin-manageable: true
+        volume:
+          size: 512Mi
+$(ai_tool_component claude-code claude quay.io/che-incubator/dashboard-ai/claude-code:next)
+$(ai_tool_component opencode opencode quay.io/che-incubator/dashboard-ai/opencode:next)
+    commands:
+$(ai_tool_commands claude-code "Claude Code")
+$(ai_tool_commands opencode OpenCode)
+    events:
+      preStart:
+        - install-claude-code
+        - install-opencode
+      postStart:
+        - symlink-claude-code
+        - symlink-opencode
 EOF
 }
 
