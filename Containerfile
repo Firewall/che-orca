@@ -54,6 +54,12 @@ RUN case "$TARGETARCH" in \
     curl -fsSL -o /orca/LICENSE "https://raw.githubusercontent.com/stablyai/orca/v${ORCA_VERSION}/LICENSE" && \
     echo "ff1b611f80580d49f4b97e93a97b24eb050b0671b26b8afe16341fab699112f3  /orca/LICENSE" | sha256sum -c -
 
+# The release build lists Orca's agent skills, with checksums, but does not ship them. Fetch them
+# from the release tag so agents get the skills without network access at run time.
+COPY build/fetch-skills.py /tmp/build/fetch-skills.py
+RUN python3 -I /tmp/build/fetch-skills.py /orca/app/resources/skills/current-manifest.json \
+      "$ORCA_VERSION" /orca/skills
+
 COPY --from=xvfb /orca/runtime /orca/runtime
 COPY --from=patchelf /usr/local/bin/patchelf /usr/local/bin/patchelf
 COPY build/bundle-libraries.sh build/set-rpath.sh /tmp/build/
@@ -67,6 +73,7 @@ RUN /tmp/build/bundle-libraries.sh /orca/runtime/lib /orca/runtime/share/license
     /tmp/build/set-rpath.sh /orca/runtime/lib /orca/app/orca-ide && \
     mkdir -p /orca/bin && \
     ln -s ../app/resources/bin/orca-ide /orca/bin/orca && \
+    ln -s ../app/resources/bin/orca-ide /orca/bin/orca-ide && \
     ln -s ../runtime/bin/Xvfb /orca/bin/Xvfb
 
 # Prove that the bundle needs nothing from the image it runs in.

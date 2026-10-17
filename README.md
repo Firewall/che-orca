@@ -111,7 +111,7 @@ Use the full `pairing.webClientUrl` from the `orca_server_ready` record, **inclu
 
 ## Orca CLI
 
-The CLI comes from the same Orca release as the server. `/orca/bashrc.sh` adds `/orca/bin` to `PATH`, so it works in any interactive shell, and terminals that Orca opens have it too:
+The CLI comes from the same Orca release as the server. `/orca/bashrc.sh` adds `/orca/bin` to `PATH`, so it works in any interactive shell, and terminals that Orca opens have it too. It is also available as `orca-ide`, the name Orca's skills tell agents to use outside Orca's terminals, where `orca` could be the GNOME screen reader:
 
 ```bash
 orca --help
@@ -129,7 +129,9 @@ orca repo add --path /projects/my-repo
 
 ### Agents
 
-On start, the entrypoint also sets the Orca host name to the workspace name. For each of `claude`, `codex`, and `opencode` on `PATH`, it installs Orca's skills with `orca skills install`, which needs `npx` and network access. For Claude and Codex it also writes Orca's agent status hooks. OpenCode gets its status plugin from Orca's terminals instead. Skills and hooks live in the home directory, so this runs again whenever the container restarts. Results appear in `/orca/entrypoint-logs.txt`.
+The image ships Orca's agent skills for the pinned release, such as `orca-cli`, which tells agents about the CLI and its browser. Each skill is a short stub that loads the guide for the installed Orca version with `orca skills get`. On start, the entrypoint links them into `~/.claude/skills` for Claude Code and `~/.agents/skills` for OpenCode and Codex, and leaves skills you installed there under the same name alone. This needs no network access, unlike `orca skills install`, which fetches the skills with `npx` from GitHub.
+
+The entrypoint also sets the Orca host name to the workspace name. When `claude` or `codex` is on `PATH`, it writes Orca's agent status hooks. OpenCode gets its status plugin from Orca's terminals instead. Skill links and hooks live in the home directory, so this runs again whenever the container restarts. Results appear in `/orca/entrypoint-logs.txt`.
 
 ### Persistent state
 
@@ -183,7 +185,7 @@ Remove it with `make unregister`. Manual registration also needs `ORCA_PAIRING_A
 
 ## Versions and limitations
 
-The Containerfile pins Orca to v1.4.219 and checks the release RPM and Orca's license file against SHA-256 checksums. Update `ORCA_VERSION` and the checksums together when testing a newer release. Base images and the universal developer image tag still follow moving releases, so builds are not fully reproducible.
+The Containerfile pins Orca to v1.4.219 and checks the release RPM and Orca's license file against SHA-256 checksums. Orca's agent skills come from the same release tag and are checked against the checksums listed in the release build. Update `ORCA_VERSION` and the checksums together when testing a newer release. Base images and the universal developer image tag still follow moving releases, so builds are not fully reproducible.
 
 Orca's headless browser needs an X display, and neither UBI 9 nor UBI 10 ships an X server. [`build/build-xvfb.sh`](build/build-xvfb.sh) builds Xvfb on UBI 9 from pinned X.Org sources, whose release signatures were checked when the checksums were recorded, together with the few X libraries UBI lacks. Everything else in the bundle is copied from UBI 9 packages. A verification stage starts Orca in a bare `ubi9-minimal` image and opens a browser tab, so the build fails if the bundle depends on anything outside it. Xvfb, patchelf, and the Orca bundle build in separate stages, so changing one does not rebuild the others.
 
@@ -207,6 +209,7 @@ build/build-xvfb.sh             builds Xvfb and the X libraries UBI lacks
 build/bundle-libraries.sh       copies the UBI libraries the bundle loads, with their licenses
 build/set-rpath.sh              points Orca's executable at the bundled libraries
 build/verify-bundle.sh          checks that the bundle runs on a bare ubi9-minimal image
+build/fetch-skills.py           fetches Orca's agent skills and checks them against the release manifest
 devfile.yaml                    injector and runtime components, preStart/postStart events
 deploy.sh                       build, push, Route, template, workspace, pairing URL
 teardown.sh                     remove workspace, template, Service, Route

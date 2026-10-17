@@ -7,6 +7,7 @@ cp /usr/local/bin/shared-bashrc.sh /orca/bashrc.sh
 cp -r /opt/orca/app /orca/app
 cp -r /opt/orca/runtime /orca/runtime
 cp -r /opt/orca/bin /orca/bin
+cp -r /opt/orca/skills /orca/skills
 cp /opt/orca/LICENSE /orca/LICENSE
 
 echo "Orca injector complete"
