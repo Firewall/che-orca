@@ -31,6 +31,8 @@ done
 export ORCA_USER_DATA="$PERSIST/orca-home"
 export ORCA_USER_DATA_PATH="$ORCA_USER_DATA"
 export ORCA_VERSION=1.4.219
+# orcad drives this Chromium for agents' browser commands.
+export ORCA_BROWSER_EXECUTABLE=/orca/chromium/chromium
 
 # orcad listens on loopback, where only Che's gateway reaches it, after the Che login.
 # The web client is served from a copy whose page pairs with orcad on load. It lives in

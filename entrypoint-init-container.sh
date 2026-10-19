@@ -14,6 +14,7 @@ cp -r /opt/orca/web /orca/web
 cp -r /opt/orca/cli /orca/cli
 cp -r /opt/orca/bin /orca/bin
 cp -r /opt/orca/skills /orca/skills
+cp -r /opt/orca/chromium /orca/chromium
 cp /opt/orca/LICENSE /orca/LICENSE
 
 echo "Orca injector complete"

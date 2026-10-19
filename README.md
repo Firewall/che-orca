@@ -127,6 +127,12 @@ The image ships Orca's agent skills for the pinned release, such as `orca-cli`, 
 
 The entrypoint adds `/injected-tools/bin`, where Che's AI tool injectors put `claude` and `opencode`, to `PATH`, so terminals that Orca opens can run them. It also sets the Orca host name to the workspace name. When `claude` or `codex` is on `PATH`, it writes Orca's agent status hooks. OpenCode gets its status plugin from Orca's terminals instead. Skill links and hooks live in the home directory, so this runs again whenever the container restarts. Results appear in `/orca/entrypoint-logs.txt`.
 
+### Browser
+
+Agents get a headless Chrome for Orca's browser commands, such as `orca tab create --url <url>`, `orca snapshot`, `orca click --element @e3`, `orca fill`, and `orca screenshot`. `orca --help` lists the rest. The image ships Chrome for Testing's headless shell under `/orca/chromium`, with the UBI libraries it loads, and `orcad` drives it through the `agent-browser` binary its build ships. Chrome runs with `--no-sandbox`, because OpenShift's restricted security context blocks both Chromium sandboxes.
+
+Orca does not stream these pages, so the web client cannot show them, and they have no browser profiles or certificate overrides. Chrome for Testing publishes x86_64 Linux builds only, so the image cannot build for arm64.
+
 ### Persistent state
 
 Everything that should survive a workspace restart lives under `/projects/.che-orca`:
@@ -164,9 +170,9 @@ Remove it with `make unregister`. Restore your user namespace in `config.env` be
 
 The Containerfile pins Orca, including its CLI, to v1.4.219. Update that version declaration when testing a newer release. Base images and the universal developer image tag still follow moving releases, so builds are not fully reproducible.
 
-Orca v1.4.219 needs [`web-client.patch`](web-client.patch) to serve its web client (`webClientRoot`) and to initialize the terminal graph, which a standalone server has no renderer to publish.
+Orca v1.4.219 needs [`web-client.patch`](web-client.patch) to serve its web client (`webClientRoot`) and to initialize the terminal graph, which a standalone server has no renderer to publish. [`orcad-browser-refs.patch`](orcad-browser-refs.patch) keeps snapshot refs such as `@e1` valid between browser commands: orcad switched tabs before every command, which drops agent-browser's refs. The build also replaces Orca's pinned agent-browser 0.27 with 0.39.1, because 0.27 reports clicks on elements below the fold as done without scrolling to them.
 
-The published image targets `linux/amd64` and `linux/arm64`; `make build` builds `linux/amd64` only. The builder stage runs on the host architecture (`--platform=$BUILDPLATFORM`) and cross-compiles the `orcad` runtime, because esbuild fails under amd64 emulation on ARM machines.
+The published image targets `linux/amd64` only, because Chrome for Testing publishes no arm64 Linux build; `make build` builds the same. The builder stage runs on the host architecture (`--platform=$BUILDPLATFORM`) and cross-compiles the `orcad` runtime, because esbuild fails under amd64 emulation on ARM machines.
 
 `s390x` and `ppc64le` are not supported. The `orcad` runtime is a Bun-compiled binary and Bun publishes x64 and arm64 builds only, so the architecture cannot be built from this source regardless of base image availability.
 
@@ -184,6 +190,9 @@ entrypoint.sh                   persistent state, starts orcad on 6768
 pairing-page.js                 writes the web client page that pairs on load
 orca.sh                         Orca CLI launcher, installed as /orca/bin/orca and orca-ide
 web-client.patch                upstream patch applied during the build
+orcad-browser-refs.patch        upstream patch applied during the build
+chromium.sh                     starts the headless Chrome without its sandbox
+build/                          scripts that bundle Chrome's libraries
 shared/                         deploy helpers, devfile renderer, runtime setup
 config.env.example              documented local configuration
 Makefile                        build, push, and admin registration targets

@@ -1,0 +1,15 @@
+--- a/src/main/orcad/external-chromium-browser-session.ts
++++ b/src/main/orcad/external-chromium-browser-session.ts
+@@ -128,6 +128,12 @@
+   }
+ 
+   async selectPage(agentPageId: string): Promise<void> {
++    // agent-browser drops the last snapshot's refs on every tab switch, even to the active tab,
++    // so switching before each command broke `snapshot` followed by `click @e1`.
++    const tabs = await this.readTabs()
++    if (tabs.some((tab) => tab.active && tab.tabId === agentPageId)) {
++      return
++    }
+     await this.run(['tab', agentPageId])
+   }
+ 

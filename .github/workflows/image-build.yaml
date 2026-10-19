@@ -15,8 +15,8 @@ env:
   IMAGE: quay.io/che-incubator/che-orca
 
 jobs:
-  # Orca's orcad runtime is a Bun-compiled binary and Bun publishes x64 and
-  # arm64 builds only, so s390x and ppc64le cannot be built from this source.
+  # Chrome for Testing publishes its headless shell for x86_64 Linux only, so
+  # this branch builds linux/amd64 alone.
   # Each platform builds on a native runner; emulating the runtime stage is
   # too slow for the dnf install and the Orca build.
   build:
@@ -30,8 +30,6 @@ jobs:
         include:
           - platform: linux/amd64
             runner: ubuntu-24.04
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
