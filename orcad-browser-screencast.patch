@@ -1,0 +1,1087 @@
+diff --git a/src/main/browser/browser-screencast-stream.ts b/src/main/browser/browser-screencast-stream.ts
+index 237c9485..bd2cd2a9 100644
+--- a/src/main/browser/browser-screencast-stream.ts
++++ b/src/main/browser/browser-screencast-stream.ts
+@@ -1,5 +1,5 @@
+ import type { WebContents } from 'electron'
+-import { BrowserError } from './cdp-bridge'
++import { BrowserError } from './browser-error'
+ import { acquireElectronDebugger, type ElectronDebuggerLease } from './electron-debugger-lease'
+ import { createBrowserScreencastMessageHandler } from './browser-screencast-cdp-events'
+ import { sendDebuggerCommand } from './browser-screencast-debugger-command'
+diff --git a/src/main/orcad/external-chromium-browser-process.ts b/src/main/orcad/external-chromium-browser-process.ts
+index 912a4477..8620d776 100644
+--- a/src/main/orcad/external-chromium-browser-process.ts
++++ b/src/main/orcad/external-chromium-browser-process.ts
+@@ -19,6 +19,23 @@ import {
+   type ExternalChromiumPageRecord as PageRecord
+ } from './external-chromium-tab-projection'
+ import { ExternalChromiumTabRegistry } from './external-chromium-tab-registry'
++import { ExternalChromiumScreencasts } from './external-chromium-screencasts'
++import type { BrowserScreencastParams } from '../runtime/runtime-browser-commands-browser-command-target-params'
++import type { BrowserScreencastResult } from '../../shared/runtime-types'
++
++// Input a watching client sends; it skips the agent-browser queue while the page streams.
++const SCREENCAST_INPUT_METHODS = new Set([
++  'browserMouseMove',
++  'browserMouseDown',
++  'browserMouseUp',
++  'browserMouseWheel',
++  'browserKeypress'
++])
++type ScreencastStream = {
++  sendBinary: (bytes: Uint8Array<ArrayBufferLike>) => boolean | void
++  emit?: (event: BrowserScreencastResult) => void
++}
++
+ const AgentBrowserSnapshot = z.object({
+   refs: z
+     .record(z.string(), z.object({ name: z.string().optional(), role: z.string().optional() }))
+@@ -29,12 +46,18 @@ const AgentBrowserSnapshot = z.object({
+ export class ExternalChromiumBrowserProcess {
+   private readonly session: ExternalChromiumBrowserSession
+   private readonly tabs: ExternalChromiumTabRegistry
++  private readonly screencasts: ExternalChromiumScreencasts
+   private queue: Promise<void> = Promise.resolve()
+   private available = false
+ 
+   constructor(agentBrowserPath: string, launch: ExternalChromiumLaunch, statePath: string) {
+     this.session = new ExternalChromiumBrowserSession(agentBrowserPath, launch, statePath)
+     this.tabs = new ExternalChromiumTabRegistry(this.session)
++    this.screencasts = new ExternalChromiumScreencasts(this.session.profileDirectory)
++  }
++
++  sessionTabs(worktreeId: string): ReturnType<ExternalChromiumTabRegistry['sessionTabs']> {
++    return this.available ? this.tabs.sessionTabs(worktreeId) : []
+   }
+ 
+   async start(): Promise<void> {
+@@ -51,6 +74,13 @@ export class ExternalChromiumBrowserProcess {
+         if (typeof property !== 'string') {
+           return undefined
+         }
++        if (property === 'browserScreencast') {
++          return (params: BrowserScreencastParams, stream: ScreencastStream) =>
++            this.screencast(host, params, stream)
++        }
++        if (SCREENCAST_INPUT_METHODS.has(property) || property === 'browserSetViewport') {
++          return (...args: unknown[]) => this.streamingInput(host, property, args)
++        }
+         return (...args: unknown[]) => this.enqueue(() => this.invoke(host, property, args))
+       }
+     })
+@@ -61,12 +91,69 @@ export class ExternalChromiumBrowserProcess {
+ 
+   async stop(): Promise<void> {
+     this.available = false
++    this.screencasts.stopAll()
+     await this.enqueue(async () => {
+       await this.session.stop()
+       this.tabs.clear()
+     })
+   }
+ 
++  private async screencast(
++    host: RuntimeBrowserCommandHost,
++    params: BrowserScreencastParams,
++    stream: ScreencastStream
++  ): Promise<unknown> {
++    // Only the lookups go through agent-browser; the stream itself runs on its own CDP socket.
++    const { page, targetId, tab } = await this.enqueue(async () => {
++      const target = await this.tabs.resolveTargetPage(host, params as Record<string, unknown>)
++      return {
++        page: target,
++        targetId: await this.tabs.targetIdFor(target),
++        tab: await this.tabs.describePage(target)
++      }
++    })
++    return this.screencasts.start(
++      { publicPageId: page.publicPageId, targetId },
++      tab,
++      params,
++      stream
++    )
++  }
++
++  private async streamingInput(
++    host: RuntimeBrowserCommandHost,
++    method: string,
++    args: unknown[]
++  ): Promise<unknown> {
++    const params = (args[0] ?? {}) as Record<string, unknown>
++    const page = await this.tabs.resolveTargetPage(host, params).catch(() => null)
++    if (page && this.screencasts.isStreaming(page.publicPageId)) {
++      if (method === 'browserSetViewport') {
++        const viewport = {
++          viewportWidth: Number(params.width),
++          viewportHeight: Number(params.height),
++          deviceScaleFactor:
++            typeof params.deviceScaleFactor === 'number' ? params.deviceScaleFactor : 1,
++          mobile: params.mobile === true
++        }
++        if (await this.screencasts.updateViewport(page.publicPageId, viewport)) {
++          return {
++            width: viewport.viewportWidth,
++            height: viewport.viewportHeight,
++            deviceScaleFactor: viewport.deviceScaleFactor,
++            mobile: viewport.mobile
++          }
++        }
++      } else {
++        const result = await this.screencasts.input(page.publicPageId, method, params)
++        if (result !== null) {
++          return result
++        }
++      }
++    }
++    return this.enqueue(() => this.invoke(host, method, args))
++  }
++
+   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+     const result = this.queue.then(operation, operation)
+     this.queue = result.then(
+@@ -119,12 +206,6 @@ export class ExternalChromiumBrowserProcess {
+         profileLabel: 'Default'
+       }
+     }
+-    if (method === 'browserScreencast') {
+-      throw new BrowserError(
+-        'browser_screencast_unavailable',
+-        'This browser provider does not offer screencast.'
+-      )
+-    }
+     if (method === 'browserProceedCertificate') {
+       throw new BrowserError(
+         'browser_certificate_trust_unavailable',
+@@ -154,7 +235,10 @@ export class ExternalChromiumBrowserProcess {
+           `Unsupported browser URL: ${String(params.url ?? '')}`
+         )
+       }
+-      return this.session.run(['open', url])
++      const result = await this.session.run(['open', url])
++      // Refreshes the session tab's title and URL.
++      await this.tabs.describePage(page).catch(() => undefined)
++      return result
+     }
+     if (method === 'browserEval') {
+       return this.session.run(['eval', String(params.expression ?? '')])
+diff --git a/src/main/orcad/external-chromium-browser-session.ts b/src/main/orcad/external-chromium-browser-session.ts
+index d3ade23f..c9109d66 100644
+--- a/src/main/orcad/external-chromium-browser-session.ts
++++ b/src/main/orcad/external-chromium-browser-session.ts
+@@ -19,6 +19,7 @@ export type ExternalChromiumLaunch = {
+ const AgentBrowserTab = z.object({
+   active: z.boolean(),
+   tabId: z.string(),
++  targetId: z.string().optional(),
+   title: z.string(),
+   url: z.string()
+ })
+@@ -87,6 +88,11 @@ export class ExternalChromiumBrowserSession {
+     this.profilePath = join(statePath, `browser-${launch.provider}`)
+   }
+ 
++  /** Where Chromium writes DevToolsActivePort for the screencast to find. */
++  get profileDirectory(): string {
++    return this.profilePath
++  }
++
+   async start(): Promise<string> {
+     await mkdir(this.profilePath, { recursive: true })
+     // Why: the session name is stable across runs, so a daemon an earlier orcad left behind is
+diff --git a/src/main/orcad/external-chromium-cdp-target.ts b/src/main/orcad/external-chromium-cdp-target.ts
+new file mode 100644
+index 00000000..28d7323d
+--- /dev/null
++++ b/src/main/orcad/external-chromium-cdp-target.ts
+@@ -0,0 +1,178 @@
++import { EventEmitter } from 'node:events'
++import { readFile } from 'node:fs/promises'
++import { join } from 'node:path'
++import { BrowserError } from '../browser/browser-error'
++
++const CONNECT_TIMEOUT_MS = 10_000
++
++type PendingCommand = {
++  resolve: (value: unknown) => void
++  reject: (error: Error) => void
++}
++
++type CdpMessage = {
++  id?: unknown
++  method?: unknown
++  params?: unknown
++  result?: unknown
++  error?: { message?: unknown }
++}
++
++/**
++ * The slice of Electron's `webContents.debugger` the screencast engine uses, spoken over a
++ * DevTools page socket. Chromium accepts several clients per page, so this runs beside the
++ * agent-browser daemon that drives the same page.
++ */
++export class ExternalChromiumCdpDebugger extends EventEmitter {
++  private nextId = 1
++  private readonly pending = new Map<number, PendingCommand>()
++  private open = true
++
++  constructor(
++    private readonly socket: WebSocket,
++    private readonly onCrashChange: (crashed: boolean) => void
++  ) {
++    super()
++    socket.addEventListener('message', (event) => this.receive(event.data))
++    socket.addEventListener('close', () => this.close('target_closed'))
++  }
++
++  attach(): void {
++    // The socket is attached from the moment it opens.
++  }
++
++  isAttached(): boolean {
++    return this.open
++  }
++
++  detach(): void {
++    this.socket.close()
++    this.close('detached')
++  }
++
++  sendCommand(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
++    if (!this.open) {
++      return Promise.reject(new Error('The browser page is no longer attached.'))
++    }
++    const id = this.nextId++
++    return new Promise((resolve, reject) => {
++      this.pending.set(id, { resolve, reject })
++      this.socket.send(JSON.stringify({ id, method, params }))
++    })
++  }
++
++  private receive(data: unknown): void {
++    if (typeof data !== 'string') {
++      return
++    }
++    let message: CdpMessage
++    try {
++      message = JSON.parse(data) as CdpMessage
++    } catch {
++      return
++    }
++    if (typeof message.id === 'number') {
++      const pending = this.pending.get(message.id)
++      if (!pending) {
++        return
++      }
++      this.pending.delete(message.id)
++      if (message.error) {
++        const detail = message.error.message
++        pending.reject(new Error(typeof detail === 'string' ? detail : 'CDP command failed.'))
++      } else {
++        pending.resolve(message.result ?? {})
++      }
++      return
++    }
++    if (typeof message.method !== 'string') {
++      return
++    }
++    if (message.method === 'Inspector.targetCrashed') {
++      this.onCrashChange(true)
++    } else if (message.method === 'Inspector.targetReloadedAfterCrash') {
++      this.onCrashChange(false)
++    }
++    // Same argument order as Electron's debugger 'message' event.
++    this.emit('message', {}, message.method, message.params ?? {})
++  }
++
++  private close(reason: string): void {
++    if (!this.open) {
++      return
++    }
++    this.open = false
++    for (const pending of this.pending.values()) {
++      pending.reject(new Error('The browser page closed.'))
++    }
++    this.pending.clear()
++    this.emit('detach', {}, reason)
++  }
++}
++
++/** Stands in for the Electron WebContents that `startBrowserScreencast` expects. */
++export class ExternalChromiumCdpTarget {
++  readonly debugger: ExternalChromiumCdpDebugger
++  private crashed = false
++
++  constructor(socket: WebSocket) {
++    this.debugger = new ExternalChromiumCdpDebugger(socket, (crashed) => {
++      this.crashed = crashed
++    })
++  }
++
++  isDestroyed(): boolean {
++    return !this.debugger.isAttached()
++  }
++
++  isCrashed(): boolean {
++    return this.crashed
++  }
++
++  close(): void {
++    this.debugger.detach()
++  }
++}
++
++/** Opens a CDP socket to one page of the Chromium that agent-browser launched on this profile. */
++export async function connectExternalChromiumCdpTarget(
++  profilePath: string,
++  targetId: string
++): Promise<ExternalChromiumCdpTarget> {
++  // Chromium writes the port it picked for --remote-debugging-port=0 to the profile directory.
++  const portFile = await readFile(join(profilePath, 'DevToolsActivePort'), 'utf8').catch(() => '')
++  const port = Number.parseInt(portFile.split('\n')[0] ?? '', 10)
++  if (!Number.isInteger(port) || port <= 0) {
++    throw new BrowserError(
++      'browser_screencast_unavailable',
++      'The browser did not publish a DevTools port.'
++    )
++  }
++  const socket = new WebSocket(`ws://127.0.0.1:${port}/devtools/page/${targetId}`)
++  await new Promise<void>((resolve, reject) => {
++    const timer = setTimeout(() => {
++      socket.close()
++      reject(new BrowserError('browser_timeout', 'Timed out connecting to the browser page.'))
++    }, CONNECT_TIMEOUT_MS)
++    socket.addEventListener(
++      'open',
++      () => {
++        clearTimeout(timer)
++        resolve()
++      },
++      { once: true }
++    )
++    socket.addEventListener(
++      'error',
++      () => {
++        clearTimeout(timer)
++        reject(new BrowserError('browser_tab_not_found', 'Could not connect to the browser page.'))
++      },
++      { once: true }
++    )
++  })
++  const target = new ExternalChromiumCdpTarget(socket)
++  // Only for the crash events; a page that refuses it still streams.
++  await target.debugger.sendCommand('Inspector.enable').catch(() => undefined)
++  return target
++}
+diff --git a/src/main/orcad/external-chromium-screencasts.ts b/src/main/orcad/external-chromium-screencasts.ts
+new file mode 100644
+index 00000000..b6abb852
+--- /dev/null
++++ b/src/main/orcad/external-chromium-screencasts.ts
+@@ -0,0 +1,301 @@
++import { randomUUID } from 'node:crypto'
++import type { WebContents } from 'electron'
++import type { BrowserScreencastResult } from '../../shared/runtime-types'
++import { startBrowserScreencast } from '../browser/browser-screencast-stream'
++import type {
++  BrowserScreencastSession,
++  BrowserScreencastViewport
++} from '../browser/browser-screencast-stream-types'
++import {
++  cdpPointerButtonMask,
++  normalizeCdpPointerButton,
++  type CdpPointerButton
++} from '../browser/agent-browser-bridge-mouse'
++import { imeFallbackKeyEvent, parseCdpKeyEvent } from '../browser/cdp-keyboard-us-layout'
++import {
++  normalizeScreencastFrameBudget,
++  normalizeScreencastViewport,
++  type BrowserScreencastParams,
++  type BrowserScreencastStartResult
++} from '../runtime/runtime-browser-commands-browser-command-target-params'
++import { sendRemoteBrowserScreencastFrame } from '../runtime/remote-browser-screencast-frame-admission'
++import {
++  connectExternalChromiumCdpTarget,
++  type ExternalChromiumCdpTarget
++} from './external-chromium-cdp-target'
++
++type ScreencastStream = {
++  sendBinary: (bytes: Uint8Array<ArrayBufferLike>) => boolean | void
++  emit?: (event: BrowserScreencastResult) => void
++}
++
++type Subscriber = ScreencastStream & {
++  pendingFrame: Uint8Array<ArrayBufferLike> | null
++  resolveDone: () => void
++}
++
++type PageStream = {
++  target: ExternalChromiumCdpTarget
++  format: 'jpeg' | 'png'
++  started: Promise<BrowserScreencastSession>
++  session: BrowserScreencastSession | null
++  subscribers: Map<string, Subscriber>
++  // The client sends a position with mouseMove only, so down/up/wheel land where it last moved.
++  pointer: { x: number; y: number; buttons: number }
++}
++
++/**
++ * Streams pages of the external Chromium to Orca clients with the desktop's screencast engine,
++ * and takes their pointer and keyboard input straight over CDP while they watch. Input through
++ * agent-browser costs a process launch per event, which made a click take a second.
++ */
++export class ExternalChromiumScreencasts {
++  private readonly streams = new Map<string, PageStream>()
++
++  constructor(private readonly profilePath: string) {}
++
++  async start(
++    page: { publicPageId: string; targetId: string },
++    tab: Record<string, unknown>,
++    params: BrowserScreencastParams,
++    stream: ScreencastStream
++  ): Promise<BrowserScreencastStartResult> {
++    const browserPageId = page.publicPageId
++    const subscriptionId = `browser-screencast:${browserPageId}:${randomUUID()}`
++    const viewport = normalizeScreencastViewport(params)
++    let resolveDone!: () => void
++    const done = new Promise<void>((resolve) => {
++      resolveDone = resolve
++    })
++    let active = this.streams.get(browserPageId)
++    if (!active) {
++      active = await this.open(browserPageId, page.targetId, params)
++    }
++    const record = active
++    record.subscribers.set(subscriptionId, { ...stream, pendingFrame: null, resolveDone })
++    let session: BrowserScreencastSession
++    try {
++      session = await record.started
++    } catch (error) {
++      record.subscribers.delete(subscriptionId)
++      resolveDone()
++      throw error
++    }
++    if (record.subscribers.size > 1 && viewport.viewportWidth && viewport.viewportHeight) {
++      await session.updateViewport(viewport)
++    }
++    return {
++      subscriptionId,
++      flushPendingFrame: () => {
++        const subscriber = record.subscribers.get(subscriptionId)
++        if (subscriber?.pendingFrame) {
++          const delivered = sendRemoteBrowserScreencastFrame(
++            subscriber.sendBinary,
++            subscriber.pendingFrame
++          )
++          subscriber.pendingFrame = delivered ? null : subscriber.pendingFrame
++        }
++      },
++      session: {
++        done,
++        stop: () => this.leave(browserPageId, record, subscriptionId),
++        updateViewport: (next: BrowserScreencastViewport) => session.updateViewport(next)
++      },
++      ready: { type: 'ready', subscriptionId, browserPageId, format: record.format, tab }
++    } as BrowserScreencastStartResult
++  }
++
++  isStreaming(browserPageId: string): boolean {
++    return this.streams.has(browserPageId)
++  }
++
++  /** Resizes a watched page; false when nobody is watching it. */
++  async updateViewport(
++    browserPageId: string,
++    viewport: BrowserScreencastViewport
++  ): Promise<boolean> {
++    const active = this.streams.get(browserPageId)
++    if (!active) {
++      return false
++    }
++    await (await active.started).updateViewport(viewport)
++    return true
++  }
++
++  /** Runs a watched page's pointer or key input over CDP; null when nobody is watching it. */
++  async input(
++    browserPageId: string,
++    method: string,
++    params: Record<string, unknown>
++  ): Promise<unknown> {
++    const active = this.streams.get(browserPageId)
++    if (!active) {
++      return null
++    }
++    await active.started
++    const send = (command: string, args: Record<string, unknown>): Promise<unknown> =>
++      active.target.debugger.sendCommand(command, args)
++    const pointer = active.pointer
++    switch (method) {
++      case 'browserMouseMove': {
++        pointer.x = Number(params.x)
++        pointer.y = Number(params.y)
++        await send('Input.dispatchMouseEvent', {
++          type: 'mouseMoved',
++          x: pointer.x,
++          y: pointer.y,
++          buttons: pointer.buttons
++        })
++        return { moved: { x: pointer.x, y: pointer.y } }
++      }
++      case 'browserMouseDown':
++      case 'browserMouseUp': {
++        const button: CdpPointerButton = normalizeCdpPointerButton(
++          typeof params.button === 'string' ? params.button : undefined
++        )
++        const pressed = method === 'browserMouseDown'
++        pointer.buttons = pressed
++          ? pointer.buttons | cdpPointerButtonMask(button)
++          : pointer.buttons & ~cdpPointerButtonMask(button)
++        await send('Input.dispatchMouseEvent', {
++          type: pressed ? 'mousePressed' : 'mouseReleased',
++          x: pointer.x,
++          y: pointer.y,
++          button,
++          buttons: pointer.buttons,
++          clickCount: 1
++        })
++        return pressed ? { down: button } : { up: button }
++      }
++      case 'browserMouseWheel': {
++        await send('Input.dispatchMouseEvent', {
++          type: 'mouseWheel',
++          x: pointer.x,
++          y: pointer.y,
++          deltaX: Number(params.dx ?? 0),
++          deltaY: Number(params.dy ?? 0)
++        })
++        return { wheel: { dx: params.dx ?? 0, dy: params.dy ?? 0 } }
++      }
++      case 'browserKeypress': {
++        const key = String(params.key ?? '')
++        const parsed = parseCdpKeyEvent(key) ?? imeFallbackKeyEvent(key)
++        if (!parsed) {
++          // Not in the key table; agent-browser knows more key names.
++          return null
++        }
++        const event = {
++          windowsVirtualKeyCode: parsed.keyCode,
++          nativeVirtualKeyCode: parsed.keyCode,
++          key: parsed.key,
++          code: parsed.code,
++          modifiers: parsed.modifiers,
++          location: parsed.location
++        }
++        await send('Input.dispatchKeyEvent', {
++          type: parsed.text === null ? 'rawKeyDown' : 'keyDown',
++          ...event,
++          ...(parsed.text === null ? {} : { text: parsed.text, unmodifiedText: parsed.text })
++        })
++        await send('Input.dispatchKeyEvent', {
++          type: 'keyUp',
++          ...event,
++          modifiers: parsed.modifiers & ~parsed.selfModifier
++        })
++        return { pressed: key }
++      }
++      default:
++        return null
++    }
++  }
++
++  stopAll(): void {
++    for (const active of this.streams.values()) {
++      active.session?.stop()
++      active.target.close()
++    }
++    this.streams.clear()
++  }
++
++  private async open(
++    browserPageId: string,
++    targetId: string,
++    params: BrowserScreencastParams
++  ): Promise<PageStream> {
++    const target = await connectExternalChromiumCdpTarget(this.profilePath, targetId)
++    // A concurrent subscriber may have opened the page while this one connected.
++    const raced = this.streams.get(browserPageId)
++    if (raced) {
++      target.close()
++      return raced
++    }
++    const subscribers = new Map<string, Subscriber>()
++    const record = {
++      target,
++      format: params.format,
++      session: null,
++      subscribers,
++      pointer: { x: 0, y: 0, buttons: 0 }
++    } as unknown as PageStream
++    record.started = startBrowserScreencast(target as unknown as WebContents, {
++      format: params.format,
++      ...normalizeScreencastFrameBudget(params),
++      ...normalizeScreencastViewport(params),
++      onFrame: (bytes) => {
++        for (const subscriber of subscribers.values()) {
++          const delivered = sendRemoteBrowserScreencastFrame(subscriber.sendBinary, bytes)
++          subscriber.pendingFrame = delivered ? null : bytes
++        }
++        return true
++      },
++      onEvent: (event) => {
++        for (const subscriber of subscribers.values()) {
++          subscriber.emit?.(event)
++        }
++      },
++      onError: (message) => {
++        for (const subscriber of subscribers.values()) {
++          subscriber.emit?.({ type: 'error', message })
++        }
++      }
++    })
++    this.streams.set(browserPageId, record)
++    void record.started
++      .then((session) => {
++        record.session = session
++        if (subscribers.size === 0) {
++          // Every viewer left while the stream was starting.
++          session.stop()
++        }
++        return session.done
++      })
++      .catch(() => undefined)
++      .finally(() => {
++        if (this.streams.get(browserPageId) === record) {
++          this.streams.delete(browserPageId)
++        }
++        target.close()
++        for (const subscriber of subscribers.values()) {
++          subscriber.resolveDone()
++        }
++        subscribers.clear()
++      })
++    return record
++  }
++
++  private leave(browserPageId: string, record: PageStream, subscriptionId: string): void {
++    const subscriber = record.subscribers.get(subscriptionId)
++    if (!subscriber) {
++      return
++    }
++    record.subscribers.delete(subscriptionId)
++    subscriber.resolveDone()
++    if (record.subscribers.size === 0) {
++      // The last viewer left; stop capturing and let the page run unwatched.
++      if (this.streams.get(browserPageId) === record) {
++        this.streams.delete(browserPageId)
++      }
++      record.session?.stop()
++    }
++  }
++}
+diff --git a/src/main/orcad/external-chromium-tab-registry.ts b/src/main/orcad/external-chromium-tab-registry.ts
+index 12c49a40..d17dd147 100644
+--- a/src/main/orcad/external-chromium-tab-registry.ts
++++ b/src/main/orcad/external-chromium-tab-registry.ts
+@@ -3,7 +3,10 @@ import { z } from 'zod'
+ import type { RuntimeBrowserCommandHost } from '../runtime/orca-runtime-browser'
+ import { BrowserError } from '../browser/browser-error'
+ import { normalizeBrowserNavigationUrl } from '../../shared/browser-url'
+-import type { ExternalChromiumBrowserSession } from './external-chromium-browser-session'
++import type {
++  AgentBrowserTab,
++  ExternalChromiumBrowserSession
++} from './external-chromium-browser-session'
+ import {
+   externalChromiumTabInfo,
+   type ExternalChromiumPageRecord
+@@ -15,6 +18,9 @@ export class ExternalChromiumTabRegistry {
+   private readonly pagesByAgentId = new Map<string, ExternalChromiumPageRecord>()
+   private readonly activePageIdByWorktree = new Map<string, string>()
+   private initialAgentPageId: string | null = null
++  // The last tab list agent-browser reported, so session snapshots can be built synchronously.
++  private readonly tabCache = new Map<string, AgentBrowserTab>()
++  private host: RuntimeBrowserCommandHost | null = null
+ 
+   constructor(private readonly session: ExternalChromiumBrowserSession) {}
+ 
+@@ -27,6 +33,51 @@ export class ExternalChromiumTabRegistry {
+     this.pagesByAgentId.clear()
+     this.activePageIdByWorktree.clear()
+     this.initialAgentPageId = null
++    this.tabCache.clear()
++  }
++
++  /** The worktree's tabs as session-tab rows, from the last tab list agent-browser reported. */
++  sessionTabs(
++    worktreeId: string
++  ): { browserPageId: string; title: string; url: string; active: boolean }[] {
++    const activePageId = this.activePageIdByWorktree.get(worktreeId)
++    return [...this.pagesByPublicId.values()]
++      .filter((page) => page.worktreeId === worktreeId)
++      .map((page) => {
++        const tab = this.tabCache.get(page.agentPageId)
++        return {
++          browserPageId: page.publicPageId,
++          title: tab?.title ?? '',
++          url: tab?.url ?? 'about:blank',
++          active: page.publicPageId === activePageId
++        }
++      })
++  }
++
++  /** The Chromium target behind a page, for attaching a CDP client to it. */
++  async targetIdFor(page: ExternalChromiumPageRecord): Promise<string> {
++    const tabs = await this.session.readTabs()
++    this.remember(tabs)
++    const targetId = tabs.find((tab) => tab.tabId === page.agentPageId)?.targetId
++    if (!targetId) {
++      throw new BrowserError('browser_tab_closed', 'Browser tab is no longer available.')
++    }
++    return targetId
++  }
++
++  private remember(tabs: AgentBrowserTab[]): void {
++    const changed = new Set<string>()
++    for (const tab of tabs) {
++      const previous = this.tabCache.get(tab.tabId)
++      this.tabCache.set(tab.tabId, tab)
++      const worktreeId = this.pagesByAgentId.get(tab.tabId)?.worktreeId
++      if (worktreeId && (previous?.title !== tab.title || previous?.url !== tab.url)) {
++        changed.add(worktreeId)
++      }
++    }
++    for (const worktreeId of changed) {
++      this.host?.notifyHeadlessBrowserSessionTabsChanged?.(worktreeId)
++    }
+   }
+ 
+   async createTab(
+@@ -39,6 +90,7 @@ export class ExternalChromiumTabRegistry {
+         'Only the default browser profile is available.'
+       )
+     }
++    this.host = host
+     const worktreeId = await this.resolveWorktreeId(host, params.worktree)
+     const requestedPageId =
+       typeof params.page === 'string' && params.page.length > 0 ? params.page : undefined
+@@ -71,6 +123,7 @@ export class ExternalChromiumTabRegistry {
+     }
+     const publicPageId = requestedPageId ?? randomUUID()
+     const page = { agentPageId, publicPageId, worktreeId }
++    this.tabCache.set(agentPageId, { active: true, tabId: agentPageId, title: '', url })
+     this.pagesByPublicId.set(publicPageId, page)
+     this.pagesByAgentId.set(agentPageId, page)
+     this.setActivePage(page)
+@@ -90,8 +143,10 @@ export class ExternalChromiumTabRegistry {
+     host: RuntimeBrowserCommandHost,
+     params: Record<string, unknown>
+   ): Promise<unknown> {
++    this.host = host
+     const requestedWorktreeId = await this.resolveWorktreeId(host, params.worktree)
+     const tabs = await this.session.readTabs()
++    this.remember(tabs)
+     const liveAgentPageIds = new Set(tabs.map((tab) => tab.tabId))
+     for (const page of this.pagesByPublicId.values()) {
+       if (!liveAgentPageIds.has(page.agentPageId)) {
+@@ -202,6 +257,7 @@ export class ExternalChromiumTabRegistry {
+ 
+   async describePage(page: ExternalChromiumPageRecord): Promise<Record<string, unknown>> {
+     const tabs = await this.session.readTabs()
++    this.remember(tabs)
+     const scopedTabs = tabs.filter(
+       (tab) => this.pagesByAgentId.get(tab.tabId)?.worktreeId === page.worktreeId
+     )
+@@ -232,6 +288,7 @@ export class ExternalChromiumTabRegistry {
+   private deletePage(page: ExternalChromiumPageRecord): void {
+     this.pagesByPublicId.delete(page.publicPageId)
+     this.pagesByAgentId.delete(page.agentPageId)
++    this.tabCache.delete(page.agentPageId)
+     const key = page.worktreeId ?? ''
+     if (this.activePageIdByWorktree.get(key) === page.publicPageId) {
+       this.activePageIdByWorktree.delete(key)
+diff --git a/src/main/orcad/orcad-browser-provider.ts b/src/main/orcad/orcad-browser-provider.ts
+index fdb8bfad..9b7e8d8b 100644
+--- a/src/main/orcad/orcad-browser-provider.ts
++++ b/src/main/orcad/orcad-browser-provider.ts
+@@ -5,6 +5,7 @@ import { posix, win32 } from 'node:path'
+ import {
+   setRuntimeBrowserUnavailableCause,
+   type RuntimeBrowserCommandsFactory,
++  type RuntimeBrowserSessionTab,
+   type RuntimeBrowserUnavailableCause
+ } from '../runtime/runtime-browser-commands-factory'
+ import {
+@@ -19,6 +20,8 @@ export type OrcadBrowserProvider = {
+   factory: RuntimeBrowserCommandsFactory
+   isAvailable(): boolean
+   stop(): Promise<void>
++  /** Set when the provider streams its pages to clients itself. */
++  sessionTabs?: (worktreeId: string) => RuntimeBrowserSessionTab[]
+ }
+ 
+ export type OrcadBrowserProviderOptions = {
+@@ -112,7 +115,8 @@ async function startProvider(
+     kind: launch.provider,
+     factory: (host) => processHandle.createCommands(host),
+     isAvailable: () => processHandle.isAvailable(),
+-    stop: () => processHandle.stop()
++    stop: () => processHandle.stop(),
++    sessionTabs: (worktreeId) => processHandle.sessionTabs(worktreeId)
+   }
+ }
+ 
+diff --git a/src/main/orcad/orcad-lifecycle.ts b/src/main/orcad/orcad-lifecycle.ts
+index bfff3b7f..cbb4c2cd 100644
+--- a/src/main/orcad/orcad-lifecycle.ts
++++ b/src/main/orcad/orcad-lifecycle.ts
+@@ -103,7 +103,8 @@ export async function startOrcadWithHost<T extends object>(
+       const provider = browserProvider
+       setRuntimeBrowserCommandsFactory(provider?.factory ?? null, {
+         headless: provider !== null,
+-        ...(provider ? { isAvailable: () => provider.isAvailable() } : {})
++        ...(provider ? { isAvailable: () => provider.isAvailable() } : {}),
++        ...(provider?.sessionTabs ? { sessionTabs: provider.sessionTabs } : {})
+       })
+       return start(registerCleanup)
+     },
+diff --git a/src/main/runtime/orca-runtime-build-headless-mobile-session-browser-tabs.ts b/src/main/runtime/orca-runtime-build-headless-mobile-session-browser-tabs.ts
+index a4d01045..7b74ae56 100644
+--- a/src/main/runtime/orca-runtime-build-headless-mobile-session-browser-tabs.ts
++++ b/src/main/runtime/orca-runtime-build-headless-mobile-session-browser-tabs.ts
+@@ -8,6 +8,7 @@ import type {
+ } from '../../shared/runtime-types'
+ import { parseAppSshPtyId } from '../../shared/ssh-pty-id'
+ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
++import { runtimeBrowserCommandsFactorySessionTabs } from './runtime-browser-commands-factory'
+ import { holdAgentSessionInventory } from './structured-agent-session-inventory-hold'
+ import type { Tab } from '../../shared/tab-types'
+ import {
+@@ -38,7 +39,7 @@ export class OrcaRuntimeWithBuildHeadlessMobileSessionBrowserTabs extends OrcaRu
+     const serverTabs =
+       this.offscreenBrowserBackend && this.agentBrowserBridge?.tabList
+         ? this.agentBrowserBridge.tabList(worktreeId).tabs
+-        : []
++        : runtimeBrowserCommandsFactorySessionTabs(worktreeId)
+     const publishedServerTabs = serverTabs.map((tab) => {
+       const persistedProps = this.getPersistedUnifiedSessionTabProps(worktreeId, tab.browserPageId)
+       return {
+diff --git a/src/main/runtime/orca-runtime-close-mobile-session-tab.ts b/src/main/runtime/orca-runtime-close-mobile-session-tab.ts
+index 3f7047c6..742808a8 100644
+--- a/src/main/runtime/orca-runtime-close-mobile-session-tab.ts
++++ b/src/main/runtime/orca-runtime-close-mobile-session-tab.ts
+@@ -17,6 +17,7 @@ import {
+   refusedMobileSessionTabClose
+ } from './mobile-session-tab-close-outcome'
+ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
++import { runtimeBrowserCommandsFactoryCanScreencast } from './runtime-browser-commands-factory'
+ import type { RuntimeCommandSurfaceHost } from './orca-runtime-core'
+ import { SESSION_TAB_NOT_FOUND_ERROR } from '../../shared/session-tab-close'
+ import { rendererPublicationThrottle } from '../window/renderer-publication-throttle'
+@@ -282,6 +283,12 @@ export class OrcaRuntimeWithCloseMobileSessionTab extends OrcaRuntimeWithRefuseU
+       } else if (this.isOffscreenMobileSessionBrowserTab(snapshot, tab)) {
+         await this.offscreenBrowserBackend!.closeTab(tab.browserPageId!).catch(() => {})
+         this.retireRuntimeOwnedBrowserSessionTab(worktreeId, tab.browserPageId!)
++      } else if (runtimeBrowserCommandsFactoryCanScreencast() && tab.browserPageId) {
++        // orcad's external Chromium owns this page; there is no renderer to close it.
++        await (this as RuntimeCommandSurfaceHost<this>)
++          .browserTabClose({ worktree: `id:${worktreeId}`, page: tab.browserPageId })
++          .catch(() => {})
++        this.retireRuntimeOwnedBrowserSessionTab(worktreeId, tab.browserPageId)
+       } else {
+         if (!this.notifier?.closeSessionTab) {
+           throw new Error('runtime_unavailable')
+diff --git a/src/main/runtime/orca-runtime-close-structured-agent-session-tab.ts b/src/main/runtime/orca-runtime-close-structured-agent-session-tab.ts
+index 568083bf..cbafb9e6 100644
+--- a/src/main/runtime/orca-runtime-close-structured-agent-session-tab.ts
++++ b/src/main/runtime/orca-runtime-close-structured-agent-session-tab.ts
+@@ -10,6 +10,7 @@ import type {
+ import type { RuntimePtyWorktreeRecord } from './runtime-terminal-state-records'
+ import { getMobileSessionSnapshotTabIdentityKeys } from './mobile-session-tab-merge'
+ import type { BrowserSessionTabSelectionOptions } from './browser-tab-create-publication'
++import { runtimeBrowserCommandsFactoryCanScreencast } from './runtime-browser-commands-factory'
+ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
+ import { applyBrowserSessionTabSelection } from './browser-session-tab-selection-snapshot'
+ import { getStructuredAgentSessionHost } from '../native-chat/agent-session-wire/structured-agent-session-registry'
+@@ -190,6 +191,7 @@ export class OrcaRuntimeWithCloseStructuredAgentSessionTab extends OrcaRuntimeWi
+     // Why: client-placed pages publish through the page registry and need no offscreen backing.
+     if (
+       !this.offscreenBrowserBackend &&
++      !runtimeBrowserCommandsFactoryCanScreencast() &&
+       !getRuntimeBrowserPageRegistry(this).getPage(browserPageId)
+     ) {
+       return
+diff --git a/src/main/runtime/orca-runtime-get-status.ts b/src/main/runtime/orca-runtime-get-status.ts
+index 39b8dbf0..b5360eee 100644
+--- a/src/main/runtime/orca-runtime-get-status.ts
++++ b/src/main/runtime/orca-runtime-get-status.ts
+@@ -1,6 +1,7 @@
+ import { OrcaRuntimeWithGetRuntimeId } from './orca-runtime-get-runtime-id'
+ import type { RuntimeDegradation, RuntimeStatus } from '../../shared/runtime-types'
+ import {
++  runtimeBrowserCommandsFactoryCanScreencast,
+   runtimeBrowserCommandsFactoryIsHeadless,
+   runtimeBrowserUnavailableCause
+ } from './runtime-browser-commands-factory'
+@@ -75,13 +76,15 @@ export class OrcaRuntimeWithGetStatus extends OrcaRuntimeWithGetRuntimeId {
+     const hasOffscreen = !hasRenderer && Boolean(this.offscreenBrowserBackend)
+     const hasHeadlessCommands = runtimeBrowserCommandsFactoryIsHeadless()
+     const canBrowse = hasRenderer || hasOffscreen
++    // A provider that streams its own pages (orcad's external Chromium) also serves browser panes.
++    const canScreencast = canBrowse || runtimeBrowserCommandsFactoryCanScreencast()
+     // This field reports current Windows process-identity proof. Structured RPC
+     // support itself stays advertised; agentSession.createSupport owns current eligibility.
+     const windowsProcessStartTimeAvailable =
+       process.platform === 'win32' && isWindowsProcessStartTimeAvailable()
+     const capabilities: RuntimeCapability[] = RUNTIME_CAPABILITIES.filter(
+       (capability) =>
+-        (capability !== 'browser.screencast.v1' || canBrowse) &&
++        (capability !== 'browser.screencast.v1' || canScreencast) &&
+         // Why: the nested-runtime E2E needs a real legacy transport without maintaining an old binary fixture.
+         (process.env.ORCA_E2E_DISABLE_RUNTIME_SHARED_CONTROL !== '1' ||
+           capability !== REMOTE_RUNTIME_SHARED_CONTROL_CAPABILITY) &&
+diff --git a/src/main/runtime/orca-runtime-hydrate-headless-mobile-session-tabs-from-workspace-session.ts b/src/main/runtime/orca-runtime-hydrate-headless-mobile-session-tabs-from-workspace-session.ts
+index 140093fc..dc02836b 100644
+--- a/src/main/runtime/orca-runtime-hydrate-headless-mobile-session-tabs-from-workspace-session.ts
++++ b/src/main/runtime/orca-runtime-hydrate-headless-mobile-session-tabs-from-workspace-session.ts
+@@ -26,6 +26,7 @@ import {
+   collectBrowserGroupAssignment
+ } from './mobile-session-browser-group-projection'
+ import { headlessMobileSnapshotContentUnchanged } from './mobile-session-snapshot-equality'
++import { runtimeBrowserCommandsFactorySessionTabs } from './runtime-browser-commands-factory'
+ 
+ export class OrcaRuntimeWithHydrateHeadlessMobileSessionTabsFromWorkspaceSession extends OrcaRuntimeWithWaitForSessionTabsInventoryPublication {
+   protected hydrateHeadlessMobileSessionTabsFromWorkspaceSession(
+@@ -61,6 +62,7 @@ export class OrcaRuntimeWithHydrateHeadlessMobileSessionTabsFromWorkspaceSession
+       options.onlyRuntimeOwnedTerminals === true &&
+       !this.offscreenBrowserBackend &&
+       getRuntimeBrowserPageRegistry(this).listPages(worktreeId ?? '').length === 0 &&
++      runtimeBrowserCommandsFactorySessionTabs(worktreeId ?? '').length === 0 &&
+       options.runtimeOwnedTerminalCandidateKnown !== true &&
+       !(worktreeId
+         ? this.workspaceSessionWorktreeHasRuntimeOwnedPtyCandidate(
+diff --git a/src/main/runtime/orca-runtime-schedule-mobile-session-tabs-changed.ts b/src/main/runtime/orca-runtime-schedule-mobile-session-tabs-changed.ts
+index 7ad872c2..4b936b02 100644
+--- a/src/main/runtime/orca-runtime-schedule-mobile-session-tabs-changed.ts
++++ b/src/main/runtime/orca-runtime-schedule-mobile-session-tabs-changed.ts
+@@ -9,6 +9,7 @@ import type {
+ } from '../../shared/runtime-types'
+ import { UNPUBLISHED_WORKTREE_PUBLICATION_EPOCH } from '../../shared/runtime-types'
+ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
++import { runtimeBrowserCommandsFactorySessionTabs } from './runtime-browser-commands-factory'
+ 
+ export class OrcaRuntimeWithScheduleMobileSessionTabsChanged extends OrcaRuntimeWithStoredMobileSnapshotHasStalePreservedTab {
+   protected scheduleMobileSessionTabsChanged(worktreeId: string): void {
+@@ -127,7 +128,14 @@ export class OrcaRuntimeWithScheduleMobileSessionTabsChanged extends OrcaRuntime
+   }
+ 
+   protected getLiveBrowserTabsByPageId(worktreeId: string): Map<string, BrowserTabInfo> {
+-    const liveTabs = this.agentBrowserBridge?.tabList?.(worktreeId).tabs ?? []
++    const liveTabs =
++      this.agentBrowserBridge?.tabList?.(worktreeId).tabs ??
++      // orcad's external Chromium has no agent-browser bridge; its provider lists the pages.
++      runtimeBrowserCommandsFactorySessionTabs(worktreeId).map((tab, index) => ({
++        ...tab,
++        index,
++        worktreeId
++      }))
+     const byPageId = new Map(liveTabs.map((tab) => [tab.browserPageId, tab]))
+     for (const [index, page] of getRuntimeBrowserPageRegistry(this)
+       .listPages(worktreeId)
+diff --git a/src/main/runtime/orca-runtime-stored-mobile-snapshot-has-stale-preserved-tab.ts b/src/main/runtime/orca-runtime-stored-mobile-snapshot-has-stale-preserved-tab.ts
+index c3234935..ec7febb3 100644
+--- a/src/main/runtime/orca-runtime-stored-mobile-snapshot-has-stale-preserved-tab.ts
++++ b/src/main/runtime/orca-runtime-stored-mobile-snapshot-has-stale-preserved-tab.ts
+@@ -7,6 +7,10 @@ import type {
+ } from '../../shared/runtime-types'
+ import { getMobileSessionSnapshotTabIdentityKeys } from './mobile-session-tab-merge'
+ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
++import {
++  runtimeBrowserCommandsFactoryCanScreencast,
++  runtimeBrowserCommandsFactorySessionTabs
++} from './runtime-browser-commands-factory'
+ import { sameRuntimeBrowserPlacement } from '../../shared/runtime-browser-placement'
+ import type { ClientHostedBrowserRowsEvent } from '../../shared/client-hosted-browser-rows'
+ 
+@@ -62,6 +66,15 @@ export class OrcaRuntimeWithStoredMobileSnapshotHasStalePreservedTab extends Orc
+       ) {
+         return true
+       }
++      // orcad's external Chromium pages also exist only server-side.
++      if (
++        typeof tab.browserPageId === 'string' &&
++        runtimeBrowserCommandsFactorySessionTabs(snapshot.worktree).some(
++          (page) => page.browserPageId === tab.browserPageId
++        )
++      ) {
++        return true
++      }
+       // Why: headless offscreen browser tabs exist only server-side, so a renderer-graph merge must keep them, not prune as "not in the graph".
+       if (!this.offscreenBrowserBackend) {
+         return false
+@@ -170,7 +183,11 @@ export class OrcaRuntimeWithStoredMobileSnapshotHasStalePreservedTab extends Orc
+     this.persistClientHostedBrowserPagesForWorktree(worktreeId)
+     const hasClientBrowserPages =
+       getRuntimeBrowserPageRegistry(this).listPages(worktreeId).length > 0
+-    if (this.offscreenBrowserBackend || hasClientBrowserPages) {
++    if (
++      this.offscreenBrowserBackend ||
++      hasClientBrowserPages ||
++      runtimeBrowserCommandsFactoryCanScreencast()
++    ) {
+       const reconciled = this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(
+         worktreeId,
+         hasClientBrowserPages
+diff --git a/src/main/runtime/runtime-browser-commands-factory.ts b/src/main/runtime/runtime-browser-commands-factory.ts
+index da6ad00d..80b1bd65 100644
+--- a/src/main/runtime/runtime-browser-commands-factory.ts
++++ b/src/main/runtime/runtime-browser-commands-factory.ts
+@@ -25,11 +25,23 @@ export type RuntimeBrowserCommandsFactory = (
+   host: RuntimeBrowserCommandHost
+ ) => RuntimeBrowserCommands
+ 
++export type RuntimeBrowserSessionTab = {
++  browserPageId: string
++  title: string
++  url: string
++  active: boolean
++}
++
+ export type RuntimeBrowserCommandsFactoryOptions = {
+   /** The provider owns browser pages without a renderer window. */
+   headless?: boolean
+   /** Live health probe; failure must remove advertised capability. */
+   isAvailable?: () => boolean
++  /**
++   * Set by a provider that streams its own pages: it lists them for session snapshots, and its
++   * presence advertises browser.screencast.v1 without a renderer or offscreen backend.
++   */
++  sessionTabs?: (worktreeId: string) => RuntimeBrowserSessionTab[]
+ }
+ 
+ let currentFactory: RuntimeBrowserCommandsFactory | null = null
+@@ -57,6 +69,23 @@ export function runtimeBrowserCommandsFactoryIsHeadless(): boolean {
+   return runtimeBrowserCommandsFactoryIsAvailable() && currentOptions.headless === true
+ }
+ 
++export function runtimeBrowserCommandsFactoryCanScreencast(): boolean {
++  return runtimeBrowserCommandsFactoryIsAvailable() && currentOptions.sessionTabs !== undefined
++}
++
++export function runtimeBrowserCommandsFactorySessionTabs(
++  worktreeId: string
++): RuntimeBrowserSessionTab[] {
++  if (!runtimeBrowserCommandsFactoryCanScreencast()) {
++    return []
++  }
++  try {
++    return currentOptions.sessionTabs?.(worktreeId) ?? []
++  } catch {
++    return []
++  }
++}
++
+ export type RuntimeBrowserUnavailableCause = {
+   reason: RuntimeBrowserUnavailableReason
+   detail?: string

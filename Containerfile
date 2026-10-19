@@ -21,6 +21,10 @@ RUN patch -p1 < /tmp/web-client.patch
 COPY orcad-browser-refs.patch /tmp/orcad-browser-refs.patch
 RUN patch -p1 < /tmp/orcad-browser-refs.patch
 
+# Stream orcad's Chromium pages to the web client's browser pane.
+COPY orcad-browser-screencast.patch /tmp/orcad-browser-screencast.patch
+RUN patch -p1 < /tmp/orcad-browser-screencast.patch
+
 # Build the standalone runtime without downloading or rebuilding Electron.
 RUN NODE_ENV=development pnpm install --frozen-lockfile --ignore-scripts && \
     pnpm rebuild esbuild
