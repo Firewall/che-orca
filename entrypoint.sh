@@ -7,6 +7,9 @@ setup_runtime /orca/bashrc.sh || exit 1
 export PATH="/orca/bin:${PATH}"
 export SHELL=/bin/bash
 
+# Verify the injected agent before advertising a usable Orca runtime.
+/orca/bin/opencode --version || exit 78
+
 PERSIST="${PROJECTS_ROOT:-/projects}/.che-orca"
 mkdir -p "$PERSIST/orca-home" || exit 1
 chmod 700 "$PERSIST" || exit 1
